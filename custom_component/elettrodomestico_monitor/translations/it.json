@@ -1,0 +1,183 @@
+{
+  "config": {
+    "step": {
+      "hub_costs": {
+        "title": "Hub Globale — Costi per Risorsa",
+        "data": {
+          "costo_kwh": "⚡ Costo energia elettrica (€/kWh) — valore fisso",
+          "costo_kwh_sensor": "⚡ Sensore dinamico €/kWh (sovrascrive il valore fisso se presente)",
+          "costo_acqua_m3": "💧 Costo acqua (€/m³) — valore fisso",
+          "costo_acqua_m3_sensor": "💧 Sensore dinamico €/m³ (sovrascrive il valore fisso se presente)",
+          "costo_gas_m3": "🔥 Costo gas (€/m³) — valore fisso",
+          "costo_gas_m3_sensor": "🔥 Sensore dinamico €/m³ (sovrascrive il valore fisso se presente)",
+          "vendita_kwh": "☀️ Prezzo vendita solare (€/kWh) — valore fisso",
+          "vendita_kwh_sensor": "☀️ Sensore dinamico €/kWh vendita (sovrascrive il valore fisso)"
+        },
+        "description": "Per ogni risorsa: inserisci il valore fisso OPPURE seleziona un sensore dinamico (es. dal tuo fornitore). Il sensore ha priorità sul valore fisso."
+      },
+      "hub_notifications": {
+        "title": "Hub Globale — Notifiche",
+        "data": {
+          "notify_start_time": "Inizio finestra notifiche",
+          "notify_end_time": "Fine finestra notifiche",
+          "push_targets": "Target Push (servizi notify)",
+          "alexa_targets": "Target Alexa (media_player)",
+          "google_targets": "Target Google TTS (media_player)",
+          "whatsapp_entity": "Entità input_text per WhatsApp"
+        }
+      },
+      "hub_schedule": {
+        "title": "Hub Globale — Orari Automatici",
+        "data": {
+          "auto_on_time": "Accensione automatica globale (00:00 = disabilitato)",
+          "auto_off_time": "Spegnimento automatico globale (00:00 = disabilitato)"
+        }
+      },
+      "preset_select": {
+        "title": "Tipo di Device",
+        "data": {
+          "preset": "Tipo dispositivo"
+        }
+      },
+      "vacuum": {
+        "title": "Configura Aspirapolvere / Robot",
+        "data": {
+          "slot": "Slot numerico (es: 201 per vacuum)",
+          "appliance_name": "Nome dispositivo",
+          "device_icon": "Icona",
+          "vacuum_entity": "Entità vacuum (obbligatorio — es: vacuum.roomba)",
+          "battery_sensor": "Sensore batteria % (opzionale — es: sensor.roomba_batteria)",
+          "trigger_delay_m": "Ritardo rilevamento fine ciclo (minuti)",
+          "custom_message": "Messaggio notifica fine pulizia",
+          "notify_push": "Abilita notifica Push",
+          "notify_alexa": "Abilita notifica Alexa",
+          "notify_google": "Abilita notifica Google TTS",
+          "notify_whatsapp": "Abilita notifica WhatsApp",
+          "image_on": "Immagine vacuum in funzione (.gif)",
+          "image_off": "Immagine vacuum in standby"
+        }
+      },
+      "appliance": {
+        "title": "Configura Elettrodomestico",
+        "data": {
+          "slot": "Slot numerico (es: 1 → _x1, 200 → _x200)",
+          "appliance_name": "Nome dispositivo",
+          "device_icon": "Icona",
+          "power_sensor": "Sensore potenza/flusso (opzionale se configurata Entità trigger)",
+          "switch_entity": "Switch fisico da controllare (opzionale)",
+          "trigger_entity": "Entità trigger esterna (opzionale — climate.*, binary_sensor.*, switch.*)",
+          "source_unit": "Unità sorgente (W, L/min, m³/h)",
+          "total_unit": "Unità totale (kWh, L, m³)",
+          "work_threshold_w": "Soglia rilevamento ciclo (valore sorgente)",
+          "trigger_delay_m": "Ritardo spegnimento ciclo (minuti)",
+          "start_delay_s": "Ritardo avvio ciclo (secondi)",
+          "custom_message": "Messaggio notifica fine ciclo",
+          "notify_push": "Abilita notifica Push",
+          "notify_alexa": "Abilita notifica Alexa",
+          "notify_google": "Abilita notifica Google TTS",
+          "notify_whatsapp": "Abilita notifica WhatsApp",
+          "battery_sensor": "Sensore batteria % (opzionale — per dispositivi con batteria)",
+          "image_on": "Immagine stato ON (es. /local/foto-pkg/lavatrice_on.gif)",
+          "image_off": "Immagine stato OFF (es. /local/foto-pkg/lavatrice_off.png)",
+          "power_sensor_2": "Sensore potenza pompa (opzionale — es: sensor.pompa_W per dual tracking kWh)",
+          "power_share": "Quota sensore (1.0 = 100% | 0.25 = 25% se condiviso tra 4 device)"
+        }
+      },
+      "appliance_advanced": {
+        "title": "Orari Automatici per Device",
+        "data": {
+          "schedule_override": "Usa orari personalizzati (ignora Hub)",
+          "auto_on_local": "Accensione automatica locale (00:00 = disabilitato)",
+          "auto_off_local": "Spegnimento automatico locale (00:00 = disabilitato)"
+        }
+      },
+      "irrigation": {
+        "title": "Configura Impianto Irrigazione",
+        "description": "Imposta il sensore di portata, pompa e numero di zone.",
+        "data": {
+          "slot": "Slot (xN)",
+          "appliance_name": "Nome Impianto",
+          "device_icon": "Icona",
+          "flow_sensor": "Sensore Portata (L/min)",
+          "pump_sensor": "Sensore Potenza Pompa (W)",
+          "meteo_entity": "Sensore Meteo (skip se pioggia)",
+          "_num_zones": "Numero Zone"
+        }
+      },
+      "irrigation_zone": {
+        "title": "Configura Zone",
+        "description": "Imposta lo switch e la durata per ogni zona.",
+        "data": {}
+      },
+      "irrigation_schedule": {
+        "title": "Programmazione Orari",
+        "description": "Imposta fino a 3 orari di avvio automatico. I giorni attivi si configurano tramite switch dopo il setup.",
+        "data": {
+          "s1_time": "Orario 1",
+          "s2_time": "Orario 2",
+          "s3_time": "Orario 3"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entità non trovata in Home Assistant.",
+      "slot_taken": "Slot già in uso. Scegli un numero diverso."
+    },
+    "abort": {
+      "hub_only_selected": "Hub configurato. Aggiungi device tramite 'Aggiungi Integrazione' → Elettrodomestico Monitor."
+    }
+  },
+  "options": {
+    "step": {
+      "hub_costs": {
+        "title": "Hub — Costi"
+      },
+      "hub_notifications": {
+        "title": "Hub — Notifiche"
+      },
+      "hub_schedule": {
+        "title": "Hub — Orari"
+      },
+      "init": {
+        "title": "Modifica Device",
+        "data": {
+          "appliance_name": "Nome dispositivo",
+          "device_icon": "Icona",
+          "power_sensor": "Sensore potenza/flusso",
+          "switch_entity": "Switch fisico (opzionale)",
+          "trigger_entity": "Entità trigger esterna (opzionale)",
+          "vacuum_entity": "Entità vacuum",
+          "battery_sensor": "Sensore batteria % (opzionale)",
+          "source_unit": "Unità sorgente",
+          "total_unit": "Unità totale",
+          "work_threshold_w": "Soglia rilevamento",
+          "trigger_delay_m": "Ritardo spegnimento (minuti)",
+          "start_delay_s": "Ritardo avvio (secondi)",
+          "custom_message": "Messaggio notifica",
+          "notify_push": "Notifica Push",
+          "notify_alexa": "Notifica Alexa",
+          "notify_google": "Notifica Google TTS",
+          "notify_whatsapp": "Notifica WhatsApp",
+          "image_on": "Immagine stato ON",
+          "image_off": "Immagine stato OFF",
+          "power_sensor_2": "Sensore potenza pompa (kWh)",
+          "power_share": "Quota sensore (1.0 = 100% | 0.25 = 25% se condiviso)"
+        }
+      },
+      "advanced": {
+        "title": "Orari Personalizzati",
+        "data": {
+          "schedule_override": "Usa orari personalizzati",
+          "auto_on_local": "Accensione automatica locale",
+          "auto_off_local": "Spegnimento automatico locale"
+        }
+      },
+      "reset_confirm": {
+        "title": "Reset Contatori",
+        "data": {
+          "reset_now": "Azzera tutti i contatori ora (operazione irreversibile)"
+        }
+      }
+    }
+  }
+}

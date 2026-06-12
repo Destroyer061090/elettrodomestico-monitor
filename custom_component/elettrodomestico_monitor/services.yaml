@@ -1,0 +1,78 @@
+reset_sensors:
+  name: Reset Sensori
+  description: Azzera tutti i contatori e statistiche di un dispositivo.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID del config entry del dispositivo da resettare.
+      required: true
+      selector:
+        text:
+
+set_maintenance:
+  name: Imposta Manutenzione
+  description: Registra la data/ora dell'ultima manutenzione per un dispositivo.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID del config entry del dispositivo.
+      required: true
+      selector:
+        text:
+
+export_config:
+  name: Esporta Configurazione
+  description: >
+    Esporta la configurazione di tutti i device in /config/www/em_export.json.
+    Scaricabile da /local/em_export.json.
+
+import_config:
+  name: Importa Configurazione
+  description: >
+    Importa la configurazione da un file JSON precedentemente esportato.
+    Aggiorna i device esistenti (stesso slot) o ne crea di nuovi.
+  fields:
+    filename:
+      name: Nome file
+      description: "Nome del file da importare (default: em_export.json)."
+      required: false
+      default: em_export.json
+      selector:
+        text:
+
+remove_all_devices:
+  name: Rimuovi Tutti i Device
+  description: >
+    Rimuove tutti i device (elettrodomestici, vacuum, clima, irrigazione).
+    Lascia intatto l'hub. Attenzione: operazione irreversibile.
+
+irrigation_start:
+  name: Avvia Irrigazione
+  description: Avvia manualmente un ciclo di irrigazione per un impianto.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID del config entry dell'impianto di irrigazione.
+      required: true
+      selector:
+        text:
+    zone_idx:
+      name: Indice Zona
+      description: Indice della zona da avviare (0-based). Se omesso avvia tutte le zone.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 7
+          mode: box
+
+irrigation_stop:
+  name: Ferma Irrigazione
+  description: Ferma il ciclo di irrigazione in corso per un impianto.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID del config entry dell'impianto di irrigazione.
+      required: true
+      selector:
+        text:
