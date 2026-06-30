@@ -20,6 +20,7 @@ sistema unificato che misura, contabilizza e visualizza:
 - consumo idrico reale (litri) e costo pompa per l'irrigazione;
 - cicli, durate e statistiche per oggi / mese / anno e periodi precedenti;
 - gestione automatica della ricarica di dispositivi a batteria entro soglie.
+<img width="1553" height="860" alt="image" src="https://github.com/user-attachments/assets/320e84fa-26cb-4f37-b5ae-510d090d1d4e" />
 
 ---
 
