@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    services.py
-# VERSION: 5.0.0
+# VERSION: 5.7.1
 # DESC:    Services — export/import, reset, maintenance, irrigation start/stop
 # CHANGED: 2026-06-11
 # ============================================================
@@ -14,6 +14,7 @@ import voluptuous as vol
 from .const import (
     DOMAIN, CONF_ENTRY_TYPE, CONF_SLOT, CONF_APPLIANCE_NAME, CONF_PRESET,
     ENTRY_TYPE_HUB, ENTRY_TYPE_APPLIANCE, VERSION,
+    ENTRY_TYPE_DEVICE,
 )
 
 try:
@@ -37,6 +38,34 @@ async def async_register_services(hass: HomeAssistant) -> None:
             await coord.async_reset_counters()
         else:
             _LOGGER.warning("[EM] reset_sensors: entry_id %s not found", eid)
+
+    # ── reset_all_sensors ─────────────────────────────────────────────────────
+    # One-shot reset of every device's counters (hub excluded). Iterates all
+    # registered coordinators, skipping the hub's special data keys and anything
+    # that doesn't expose async_reset_counters.
+    _RA = vol.Schema({})
+
+    async def _reset_all(call: ServiceCall):
+        store = hass.data.get(DOMAIN, {})
+        # Skip the hub's bookkeeping keys (not real device coordinators)
+        skip_keys = {"hub_entry_id", "update_coordinator"}
+        hub_entry_id = store.get("hub_entry_id")
+        done = 0
+        failed = 0
+        for key, coord in list(store.items()):
+            if key in skip_keys or key == hub_entry_id:
+                continue
+            reset = getattr(coord, "async_reset_counters", None)
+            if reset is None or not callable(reset):
+                continue
+            try:
+                await reset()
+                done += 1
+            except Exception as ex:  # noqa: BLE001 - keep resetting the others
+                failed += 1
+                _LOGGER.warning("[EM] reset_all_sensors: errore su %s: %s", key, ex)
+        _LOGGER.info("[EM] reset_all_sensors: %d device azzerati, %d falliti", done, failed)
+
 
     # ── set_maintenance ───────────────────────────────────────────────────────
     _M = vol.Schema({
@@ -72,7 +101,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
             d = dict(entry.data)
             if d.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
                 export["hub"] = {"title": entry.title, "data": d}
-            elif d.get(CONF_ENTRY_TYPE) in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION) or                     d.get("entry_type") == "irrigation":
+            elif d.get(CONF_ENTRY_TYPE) in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE) or \
+                    d.get("entry_type") in ("irrigation", "device"):
                 # Clean export data: remove auto-computed/legacy fields
                 _EXPORT_EXCLUDE = {"power_share", "_pending_hub"}
                 clean_d = {k: v for k, v in d.items() if k not in _EXPORT_EXCLUDE}
@@ -110,14 +140,22 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         if ok and file_exists:
             _LOGGER.info("[EM Export] %d devices → %s (%d bytes)", n, out, file_size)
+            abs_path = await hass.async_add_executor_job(lambda: str(out.resolve()))
             msg   = (f"✅ Export completato: **{n} device**\n\n"
-                     f"📁 File: `/config/www/em_export.json` ({file_size} bytes)\n"
-                     f"🌐 Scaricabile da: `/local/em_export.json`")
+                     f"📁 Percorso assoluto: `{abs_path}`\n"
+                     f"📦 Dimensione: {file_size} bytes\n"
+                     f"🌐 Scaricabile da: `/local/em_export.json`\n\n"
+                     f"ℹ️ Se non vedi il file nel tuo file browser, "
+                     f"controlla che punti alla stessa cartella `/config` di HA. "
+                     f"Puoi anche scaricarlo dall'URL `/local/em_export.json`.")
             title = "Elettrodomestico Monitor — Export"
         else:
             _LOGGER.error("[EM Export] File NOT created! ok=%s exists=%s path=%s",
                           ok, file_exists, out)
-            msg   = f"❌ Export fallito\nok={ok}, exists={file_exists}\nPath: {out}\nControlla i log HA"
+            msg   = (f"❌ Export fallito\n\n"
+                     f"ok={ok}, file_exists={file_exists}\n"
+                     f"Percorso tentato: `{out}`\n"
+                     f"Controlla i log HA per dettagli")
             title = "Elettrodomestico Monitor — Export ERROR"
 
         await hass.services.async_call("persistent_notification", "create", {
@@ -173,8 +211,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
             matches = [
                 e for e in hass.config_entries.async_entries(DOMAIN)
-                if (e.data.get(CONF_ENTRY_TYPE) in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION)
-                    or e.data.get("entry_type") == "irrigation")
+                if (e.data.get(CONF_ENTRY_TYPE) in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE)
+                    or e.data.get("entry_type") in ("irrigation", "device"))
                 and e.data.get(CONF_SLOT) == slot
             ]
 
@@ -221,7 +259,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         removed = 0
         for entry in entries:
             et = entry.data.get(CONF_ENTRY_TYPE) or entry.data.get("entry_type", "")
-            if et in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION):
+            if et in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE, "device"):
                 await hass.config_entries.async_remove(entry.entry_id)
                 _LOGGER.info("[EM] Removed device: %s", entry.title)
                 removed += 1
@@ -261,6 +299,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     # ── Register all ──────────────────────────────────────────────────────────
     services = {
         "reset_sensors":      (_reset, _S),
+        "reset_all_sensors":  (_reset_all, _RA),
         "set_maintenance":    (_maint, _M),
         "export_config":      (_export, vol.Schema({})),
         "import_config":      (_import, _I),
@@ -276,7 +315,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Remove all services."""
-    for name in ("reset_sensors", "set_maintenance", "export_config", "import_config",
+    for name in ("reset_sensors", "reset_all_sensors", "set_maintenance", "export_config", "import_config",
                   "remove_all_devices", "irrigation_start", "irrigation_stop"):
         if hass.services.has_service(DOMAIN, name):
             hass.services.async_remove(DOMAIN, name)

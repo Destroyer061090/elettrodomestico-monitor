@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    storage.py
-# VERSION: 5.0.0
+# VERSION: 5.1.1
 # DESC:    Storage — persistent data per device (statistics, cycle info)
 # CHANGED: 2026-06-11
 # ============================================================
@@ -50,13 +50,28 @@ class ElettrodomesticoStorage:
         self._instance_id = instance_id
 
     async def async_load(self) -> None:
-        stored = await self._store.async_load()
+        try:
+            stored = await self._store.async_load()
+        except Exception as ex:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[EM Storage] Failed to load storage for %s (corrupted?): %s — using defaults",
+                self._instance_id, ex
+            )
+            stored = None
         if stored:
-            base = _default(self._instance_id)
-            base.update(stored)
-            for d in WEEK_DAYS:
-                base["weekly"].setdefault(d, {"cicli":"0","tempo":"0min","consumo":0.0,"costo":0.0})
-            self._data = base
+            try:
+                base = _default(self._instance_id)
+                base.update(stored)
+                for d in WEEK_DAYS:
+                    base["weekly"].setdefault(d, {"cicli":"0","tempo":"0min","consumo":0.0,"costo":0.0})
+                self._data = base
+            except Exception as ex:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[EM Storage] Failed to parse storage for %s: %s — using defaults",
+                    self._instance_id, ex
+                )
 
     async def async_save(self) -> None:
         await self._store.async_save(self._data)

@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.0.0
+# VERSION: 5.7.23
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
 # CHANGED: 2026-06-11
 # ============================================================
@@ -16,9 +16,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import DOMAIN, ENTRY_TYPE_HUB, ENTRY_TYPE_APPLIANCE, CONF_ENTRY_TYPE, CONF_INSTANCE_ID, ENTRY_TYPE_IRRIGATION
+from .const import DOMAIN, ENTRY_TYPE_HUB, ENTRY_TYPE_APPLIANCE, CONF_ENTRY_TYPE, CONF_INSTANCE_ID, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE
 from .coordinator import ElettrodomesticoCoordinator
 from .irrigation_coordinator import IrrigationCoordinator
+from .device_coordinator import DeviceCoordinator
 from .update_coordinator import UpdateCheckCoordinator
 from .services import async_register_services, async_unregister_services
 from .migration import async_migrate_entry as _migrate
@@ -82,13 +83,20 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
-    """
-    Auto-manage the Lovelace JS resource.
-    Removes old versions, registers current versioned URL.
-    Uses the same approach as HACS and Mushroom cards.
-    """
+    """Auto-manage all Lovelace JS resources for this integration."""
     from .const import VERSION
-    url_current = f"/{DOMAIN}/elettrodomestico-monitor-card.js?v={VERSION}"
+    cards = [
+        "elettrodomestico-monitor-card.js",
+        "elettrodomestico-dispositivo-card.js",
+        "em-stat-table.js",
+    ]
+    for card_file in cards:
+        await _register_one_resource(hass, card_file, VERSION)
+
+
+async def _register_one_resource(hass: HomeAssistant, card_file: str, VERSION: str) -> None:
+    url_current = f"/{DOMAIN}/{card_file}?v={VERSION}"
+    card_stem = card_file.replace(".js", "")
 
     try:
         from homeassistant.components.lovelace.resources import ResourceStorageCollection
@@ -96,10 +104,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         _LOGGER.info("[EM] Add resource manually: %s", url_current)
         return
 
-    # Find ResourceStorageCollection — try all known HA versions
     resource_collection = None
-
-    # HA 2024+: stored as hass.data["lovelace"]["resources"]
     for data_key in ["lovelace", "lovelace_storage"]:
         data = hass.data.get(data_key)
         if data is None:
@@ -115,7 +120,6 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         if resource_collection:
             break
 
-    # Deep scan as last resort
     if resource_collection is None:
         for val in hass.data.values():
             if isinstance(val, ResourceStorageCollection):
@@ -136,13 +140,10 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
 
     if resource_collection is None:
         _LOGGER.info(
-            "[EM] Lovelace resource collection not found (hass.data keys: %s). "
-            "Add resource manually: %s",
-            [k for k in hass.data.keys() if 'lovelace' in str(k).lower()],
+            "[EM] Risorsa da aggiungere manualmente (dashboard in modalita YAML): "
+            "URL='%s' tipo='Modulo JavaScript'. Questo e' normale e non e' un errore.",
             url_current)
         return
-
-    _LOGGER.debug("[EM] Found ResourceStorageCollection: %s", type(resource_collection))
 
     try:
         await resource_collection.async_load()
@@ -150,29 +151,22 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         pass
 
     existing = list(resource_collection.async_items())
-    _LOGGER.debug("[EM] Current resources: %s", [i.get("url") for i in existing])
-
     current_ok = False
     to_delete  = []
 
     for item in existing:
         url = item.get("url", "")
-        is_ours = (
-            f"/{DOMAIN}/elettrodomestico-monitor-card" in url or
-            "/local/elettrodomestico-monitor-card" in url
-        )
+        is_ours = (f"/{DOMAIN}/{card_stem}" in url or f"/local/{card_stem}" in url)
         if is_ours:
             if url == url_current:
                 current_ok = True
-                _LOGGER.debug("[EM] Resource already current: %s", url)
             else:
                 to_delete.append(item)
-                _LOGGER.info("[EM] Will remove stale: %s", url)
 
     for item in to_delete:
         try:
             await resource_collection.async_delete_item(item["id"])
-            _LOGGER.info("[EM] Removed: %s", item.get("url"))
+            _LOGGER.info("[EM] Removed stale: %s", item.get("url"))
         except Exception as ex:
             _LOGGER.warning("[EM] Remove failed %s: %s", item.get("url"), ex)
 
@@ -184,8 +178,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             })
             _LOGGER.info("[EM] ✅ Lovelace resource registered: %s", url_current)
         except Exception as ex:
-            _LOGGER.warning(
-                "[EM] Registration failed: %s. Add manually: %s", ex, url_current)
+            _LOGGER.warning("[EM] Registration failed: %s. Add manually: %s", ex, url_current)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -215,10 +208,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id] = coord
         # Register irrigation-specific platforms
         await hass.config_entries.async_forward_entry_setups(
-            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TIME, Platform.TEXT])
+            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TIME, Platform.TEXT, Platform.BUTTON])
         await async_register_services(hass)
         entry.async_on_unload(entry.add_update_listener(_reload))
         _LOGGER.info("Irrigation '%s' avviata.", entry.title)
+        return True
+
+    # ── Battery Device ───────────────────────────────────────────────────────
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_DEVICE or \
+            entry.data.get("entry_type") == "device":
+        coord = DeviceCoordinator(hass, entry)
+        try:
+            await coord.async_init()
+            await coord.async_config_entry_first_refresh()
+        except Exception as exc:
+            raise ConfigEntryNotReady(f"Device setup failed: {exc}") from exc
+        hass.data[DOMAIN][entry.entry_id] = coord
+        await hass.config_entries.async_forward_entry_setups(
+            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TEXT, Platform.BUTTON])
+        await async_register_services(hass)
+        entry.async_on_unload(entry.add_update_listener(_reload))
+        _LOGGER.info("Dispositivo '%s' avviato.", entry.title)
         return True
 
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
@@ -228,7 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try: await upd.async_config_entry_first_refresh()
             except Exception: pass
             hass.data[DOMAIN]["update_coordinator"] = upd
-        await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
+        await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR, Platform.SWITCH, Platform.BUTTON])
         # Register services at hub level so export/import work even with no devices
         await async_register_services(hass)
         entry.async_on_unload(entry.add_update_listener(_reload))
@@ -265,14 +275,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get("entry_type") == "irrigation"):
         coord = hass.data[DOMAIN].get(entry.entry_id)
         ok = await hass.config_entries.async_unload_platforms(
-            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TIME, Platform.TEXT])
+            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TIME, Platform.TEXT, Platform.BUTTON])
         if ok and coord:
             await coord.async_unload()
             hass.data[DOMAIN].pop(entry.entry_id, None)
         return ok
 
+    if (entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_DEVICE or
+            entry.data.get("entry_type") == "device"):
+        ok = await hass.config_entries.async_unload_platforms(
+            entry, [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER, Platform.TEXT, Platform.BUTTON])
+        if ok:
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+        return ok
+
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
-        await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR])
+        await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR, Platform.SWITCH, Platform.BUTTON])
         hass.data[DOMAIN].pop("hub_entry_id", None)
         if not _hub_exists(hass): hass.data[DOMAIN].pop("update_coordinator", None)
         return True

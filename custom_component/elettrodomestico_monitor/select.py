@@ -48,7 +48,7 @@ async def async_setup_entry(
     iid  = entry.data.get("instance_id", "x")
     eid  = (entry.data.get(CONF_TRIGGER_ENTITY) or "").strip()
 
-    _LOGGER.warning("[CLIMA SELECT] Setting up for %s, trigger_entity=%s", name, eid)
+    _LOGGER.debug("[CLIMA SELECT] Setting up for %s, trigger_entity=%s", name, eid)
 
     dev_info = DeviceInfo(
         identifiers={(DOMAIN, iid)},
@@ -111,7 +111,7 @@ async def async_setup_entry(
                 self.async_write_ha_state()
 
         async def async_select_option(self, option: str) -> None:
-            _LOGGER.warning("[CLIMA SELECT] async_select_option called: %s → %s",
+            _LOGGER.debug("[CLIMA SELECT] async_select_option called: %s → %s",
                             option, eid)
             # Save mode to storage
             coord.storage.set("last_clima_mode", option)
@@ -124,19 +124,19 @@ async def async_setup_entry(
 
             # If climate is currently on → change mode immediately
             st = hass.states.get(eid)
-            _LOGGER.warning("[CLIMA SELECT] Climate %s state: %s", eid,
+            _LOGGER.debug("[CLIMA SELECT] Climate %s state: %s", eid,
                             st.state if st else "None")
             if st and st.state not in ("off", "unavailable", "unknown", ""):
                 try:
                     await hass.services.async_call(
                         "climate", "set_hvac_mode",
                         {"entity_id": eid, "hvac_mode": option})
-                    _LOGGER.warning("[CLIMA SELECT] ✅ set_hvac_mode(%s) sent to %s",
+                    _LOGGER.debug("[CLIMA SELECT] ✅ set_hvac_mode(%s) sent to %s",
                                     option, eid)
                 except Exception as ex:
                     _LOGGER.error("[CLIMA SELECT] ❌ set_hvac_mode failed: %s", ex)
             else:
-                _LOGGER.warning("[CLIMA SELECT] Climate is OFF — mode %s saved for next on",
+                _LOGGER.debug("[CLIMA SELECT] Climate is OFF — mode %s saved for next on",
                                 option)
 
     async_add_entities([_ClimaModeSelect()], update_before_add=True)

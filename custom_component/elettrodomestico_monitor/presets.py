@@ -28,6 +28,7 @@ PRESET_SOLARE           = "solare"
 PRESET_BATTERIA         = "batteria"
 PRESET_CLIMA            = "clima"
 PRESET_IRRIGAZIONE      = "irrigazione"
+PRESET_DISPOSITIVO      = "dispositivo"
 PRESET_GENERICO         = "generico"
 
 PRESET_IDS = [
@@ -37,6 +38,7 @@ PRESET_IDS = [
     PRESET_VACUUM,
     PRESET_CLIMA,
     PRESET_IRRIGAZIONE,
+    PRESET_DISPOSITIVO,
     PRESET_GENERICO,
 ]
 # Hidden presets (not shown in config flow selector but available in code)
@@ -50,6 +52,7 @@ PRESET_LABELS = {
     PRESET_BATTERIA:         "Batteria Dispositivo (ricarica telefoni/tablet)",
     PRESET_CLIMA:            "Clima / Termostato",
     PRESET_IRRIGAZIONE:      "Irrigazione (L/min + kWh pompa)",
+    PRESET_DISPOSITIVO:      "Dispositivi (gestione ricarica batterie)",
     PRESET_SOLARE:           "Solare / Fotovoltaico (W → kWh prodotti)",
     PRESET_GENERICO:         "Generico (personalizzabile)",
 }

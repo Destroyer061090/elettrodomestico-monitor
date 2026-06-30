@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    climate.py
-# VERSION: 5.0.4
+# VERSION: 5.7.7
 # DESC:    Climate platform — wrapper entity for clima preset devices
 # CHANGED: 2026-06-11
 # ============================================================
@@ -75,6 +75,21 @@ async def async_setup_entry(
     coord: ElettrodomesticoCoordinator = hass.data[DOMAIN][entry.entry_id]
     name = entry.data.get(CONF_APPLIANCE_NAME, "Clima")
     slot = str(entry.data.get(CONF_SLOT, "1"))
+    # Log what the underlying climate looks like, to diagnose vendor-specific
+    # issues (e.g. Mitsubishi vs Daikin exposing different attributes).
+    real = hass.states.get(clima_eid)
+    if real:
+        _LOGGER.info(
+            "[EM Clima x%s] wrapping %s — state=%s hvac_modes=%s fan_modes=%s "
+            "swing_modes=%s preset_modes=%s features=%s",
+            slot, clima_eid, real.state,
+            real.attributes.get("hvac_modes"), real.attributes.get("fan_modes"),
+            real.attributes.get("swing_modes"), real.attributes.get("preset_modes"),
+            real.attributes.get("supported_features"))
+    else:
+        _LOGGER.info(
+            "[EM Clima x%s] entita reale %s non ancora disponibile al setup, "
+            "verra agganciata appena compare (normale all'avvio)", slot, clima_eid)
     async_add_entities([_ClimaEntity(coord, entry, name, slot, clima_eid)])
 
 
@@ -96,11 +111,46 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     """
 
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE
-        | ClimateEntityFeature.TURN_ON
-        | ClimateEntityFeature.TURN_OFF
-    )
+
+    @property
+    def supported_features(self) -> ClimateEntityFeature:
+        """Mirror the underlying climate's features so EM exposes everything the
+        real device supports (fan, swing, preset, humidity, ...).
+
+        Crash-safe: only enables a feature if (a) the corresponding flag bit is
+        valid in THIS Home Assistant version's enum, and (b) the supporting data
+        is actually present. A device that advertises an unknown bit (e.g. a
+        vendor like Mitsubishi on a newer/older HA) can no longer take the entity
+        to 'unavailable'."""
+        base = (ClimateEntityFeature.TARGET_TEMPERATURE
+                | ClimateEntityFeature.TURN_ON
+                | ClimateEntityFeature.TURN_OFF)
+        st = self._real_state()
+        if not st:
+            return base
+        feat = base
+        # Build from data presence (robust) rather than trusting the raw bitmask,
+        # which may contain bits this HA version doesn't know.
+        if st.attributes.get("fan_modes"):
+            feat |= ClimateEntityFeature.FAN_MODE
+        if st.attributes.get("swing_modes"):
+            feat |= ClimateEntityFeature.SWING_MODE
+        if st.attributes.get("swing_horizontal_modes") and hasattr(ClimateEntityFeature, "SWING_HORIZONTAL_MODE"):
+            feat |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
+        if st.attributes.get("preset_modes"):
+            feat |= ClimateEntityFeature.PRESET_MODE
+        if st.attributes.get("humidity") is not None and hasattr(ClimateEntityFeature, "TARGET_HUMIDITY"):
+            feat |= ClimateEntityFeature.TARGET_HUMIDITY
+        if st.attributes.get("target_temp_high") is not None:
+            feat |= ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+        # NOTE: we deliberately build features ONLY from the data above, where
+        # each enabled feature has a matching property implemented in this class.
+        # We do NOT blindly OR-in the device's raw supported_features bitmask:
+        # doing so could enable a flag (e.g. SWING_HORIZONTAL_MODE, AUX_HEAT)
+        # whose property we don't provide, which makes HA crash with
+        # AttributeError while building capability_attributes — exactly the
+        # Mitsubishi 'climate unavailable' bug.
+        return feat
 
     def __init__(self, coord, entry, name, slot, clima_eid):
         super().__init__(coord)
@@ -144,8 +194,19 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     def hvac_modes(self) -> list[HVACMode]:
         st = self._real_state()
         if st is None: return [HVACMode.OFF, HVACMode.HEAT]
-        raw = st.attributes.get("hvac_modes", ["off", "heat"])
-        return [_HVAC_MODE_MAP.get(m, HVACMode.OFF) for m in raw]
+        raw = st.attributes.get("hvac_modes") or ["off", "heat"]
+        modes: list[HVACMode] = []
+        for m in raw:
+            mapped = _HVAC_MODE_MAP.get(str(m).lower())
+            if mapped is not None and mapped not in modes:
+                modes.append(mapped)
+        # Always include OFF and the current mode, so HA never rejects the entity
+        if HVACMode.OFF not in modes:
+            modes.append(HVACMode.OFF)
+        cur = self.hvac_mode
+        if cur not in modes:
+            modes.append(cur)
+        return modes
 
     @property
     def hvac_action(self) -> HVACAction | None:
@@ -187,12 +248,83 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     @property
     def fan_mode(self) -> str | None:
         st = self._real_state()
-        return st.attributes.get("fan_mode") if st else None
+        if not st: return None
+        val = st.attributes.get("fan_mode")
+        modes = st.attributes.get("fan_modes") or []
+        return val if (val is None or val in modes) else None
 
     @property
     def fan_modes(self) -> list[str] | None:
         st = self._real_state()
-        return st.attributes.get("fan_modes") if st else None
+        modes = st.attributes.get("fan_modes") if st else None
+        return list(modes) if modes else None
+
+    @property
+    def swing_mode(self) -> str | None:
+        st = self._real_state()
+        if not st: return None
+        val = st.attributes.get("swing_mode")
+        modes = st.attributes.get("swing_modes") or []
+        return val if (val is None or val in modes) else None
+
+    @property
+    def swing_modes(self) -> list[str] | None:
+        st = self._real_state()
+        modes = st.attributes.get("swing_modes") if st else None
+        return list(modes) if modes else None
+
+    @property
+    def swing_horizontal_mode(self) -> str | None:
+        st = self._real_state()
+        if not st: return None
+        val = st.attributes.get("swing_horizontal_mode")
+        modes = st.attributes.get("swing_horizontal_modes") or []
+        return val if (val is None or val in modes) else None
+
+    @property
+    def swing_horizontal_modes(self) -> list[str] | None:
+        st = self._real_state()
+        modes = st.attributes.get("swing_horizontal_modes") if st else None
+        return list(modes) if modes else None
+
+    @property
+    def preset_mode(self) -> str | None:
+        st = self._real_state()
+        if not st: return None
+        val = st.attributes.get("preset_mode")
+        modes = st.attributes.get("preset_modes") or []
+        return val if (val is None or val in modes) else None
+
+    @property
+    def preset_modes(self) -> list[str] | None:
+        st = self._real_state()
+        modes = st.attributes.get("preset_modes") if st else None
+        return list(modes) if modes else None
+
+    @property
+    def current_humidity(self) -> float | None:
+        st = self._real_state()
+        return st.attributes.get("current_humidity") if st else None
+
+    @property
+    def target_humidity(self) -> float | None:
+        st = self._real_state()
+        return st.attributes.get("humidity") if st else None
+
+    @property
+    def current_temperature(self) -> float | None:
+        st = self._real_state()
+        return st.attributes.get("current_temperature") if st else None
+
+    @property
+    def target_temperature_high(self) -> float | None:
+        st = self._real_state()
+        return st.attributes.get("target_temp_high") if st else None
+
+    @property
+    def target_temperature_low(self) -> float | None:
+        st = self._real_state()
+        return st.attributes.get("target_temp_low") if st else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -236,9 +368,29 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
         data = {}
         if ATTR_TEMPERATURE in kwargs:
             data["temperature"] = kwargs[ATTR_TEMPERATURE]
+        if "target_temp_high" in kwargs:
+            data["target_temp_high"] = kwargs["target_temp_high"]
+        if "target_temp_low" in kwargs:
+            data["target_temp_low"] = kwargs["target_temp_low"]
         if "hvac_mode" in kwargs:
             data["hvac_mode"] = kwargs["hvac_mode"]
         await self._call_climate("set_temperature", data)
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        await self._call_climate("set_fan_mode", {"fan_mode": fan_mode})
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        await self._call_climate("set_swing_mode", {"swing_mode": swing_mode})
+
+    async def async_set_swing_horizontal_mode(self, swing_horizontal_mode: str) -> None:
+        await self._call_climate("set_swing_horizontal_mode",
+                                 {"swing_horizontal_mode": swing_horizontal_mode})
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        await self._call_climate("set_preset_mode", {"preset_mode": preset_mode})
+
+    async def async_set_humidity(self, humidity: int) -> None:
+        await self._call_climate("set_humidity", {"humidity": humidity})
 
     async def async_turn_on(self) -> None:
         # Restore last mode or default to heat

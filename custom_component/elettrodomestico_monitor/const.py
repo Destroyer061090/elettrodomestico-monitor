@@ -1,13 +1,13 @@
 # ============================================================
 # FILE:    const.py
-# VERSION: 5.0.0
+# VERSION: 5.4.0
 # DESC:    Constants — domain, config keys, defaults, vacuum states
 # CHANGED: 2026-06-11
 # ============================================================
 """Constants for Elettrodomestico Monitor v8."""
 
 DOMAIN   = "elettrodomestico_monitor"
-VERSION  = "5.0.6"
+VERSION  = "5.8.10"
 
 GITHUB_USER             = "Destroyer061090"
 GITHUB_REPO             = "elettrodomestico-monitor"
@@ -34,6 +34,15 @@ CONF_COSTO_GAS          = "costo_gas_m3"
 CONF_COSTO_GAS_SENSOR   = "costo_gas_m3_sensor"
 CONF_VENDITA_KWH        = "vendita_kwh"
 CONF_VENDITA_KWH_SENSOR = "vendita_kwh_sensor"
+
+# ── Fotovoltaico (FV) — hub-level settings ──────────────────────────────────
+CONF_FV_ENABLED      = "fv_enabled"          # global on/off
+CONF_FV_GRID_SENSOR  = "fv_grid_sensor"      # grid power sensor (+ import / - export)
+CONF_FV_INVERT       = "fv_invert"           # if True, sensor is reversed (+ export / - import)
+CONF_FV_THRESHOLD_W  = "fv_threshold_w"      # threshold to ignore tiny grid noise (W)
+DEFAULT_FV_THRESHOLD = 0.0
+# Per-device opt-out
+CONF_FV_EXCLUDE      = "fv_exclude"          # device excluded from solar accounting
 CONF_NOTIFY_START_TIME  = "notify_start_time"
 CONF_NOTIFY_END_TIME    = "notify_end_time"
 CONF_PUSH_TARGETS       = "push_targets"
@@ -193,6 +202,22 @@ CONF_IRR_SCHEDULE_1     = "irr_schedule_1"  # {time, days, mode} — mode: fixed
 CONF_IRR_SCHEDULE_2     = "irr_schedule_2"
 CONF_IRR_SCHEDULE_3     = "irr_schedule_3"
 ENTRY_TYPE_IRRIGATION   = "irrigation"
+ENTRY_TYPE_DEVICE       = "device"
+
+# ── Dispositivi (battery charge manager) ────────────────────────────────────
+CONF_DEV_BATTERY_SENSOR = "dev_battery_sensor"   # external % battery sensor
+CONF_DEV_CHARGE_SWITCH  = "dev_charge_switch"     # smart plug switch entity
+CONF_DEV_START_PCT      = "dev_start_pct"         # below → start charging
+CONF_DEV_STOP_PCT       = "dev_stop_pct"          # above → stop charging
+CONF_VACUUM_RETURN_PCT  = "vacuum_return_pct"     # vacuum: at/below this %, send to base (0 = disabled)
+DEFAULT_VACUUM_RETURN_PCT = 0                      # default: disabled (no battery auto-return)
+DEFAULT_DEV_START_PCT   = 20
+DEFAULT_DEV_STOP_PCT    = 80
+SFX_DEV_BATTERY         = "ricarica_dispositivo"
+SFX_DEV_CHARGE_SW       = "carica_dispositivo"
+SFX_DEV_AUTO_SW         = "ricarica_auto_dispositivo"
+SFX_DEV_START_NUM       = "soglia_avvio_carica"
+SFX_DEV_STOP_NUM        = "soglia_stop_carica"
 
 # ── Vacuum-specific config keys ─────────────────────────────────────────────────
 CONF_POWER_SENSOR_2   = "power_sensor_2"    # optional: second power sensor

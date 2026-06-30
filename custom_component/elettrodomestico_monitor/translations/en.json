@@ -11,7 +11,10 @@
           "costo_gas_m3": "🔥 Costo gas (€/m³) — valore fisso",
           "costo_gas_m3_sensor": "🔥 Sensore dinamico €/m³ (sovrascrive il valore fisso se presente)",
           "vendita_kwh": "☀️ Prezzo vendita solare (€/kWh) — valore fisso",
-          "vendita_kwh_sensor": "☀️ Sensore dinamico €/kWh vendita (sovrascrive il valore fisso)"
+          "vendita_kwh_sensor": "☀️ Sensore dinamico €/kWh vendita (sovrascrive il valore fisso)",
+          "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
+          "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
         },
         "description": "Per ogni risorsa: inserisci il valore fisso OPPURE seleziona un sensore dinamico (es. dal tuo fornitore). Il sensore ha priorità sul valore fisso."
       },
@@ -117,6 +120,22 @@
           "s2_time": "Schedule 2",
           "s3_time": "Schedule 3"
         }
+      },
+      "device": {
+        "title": "Configure Device (Battery Charge)",
+        "data": {
+          "slot": "Numeric slot (e.g. 301)",
+          "appliance_name": "Device name",
+          "device_icon": "Icon",
+          "dev_battery_sensor": "🔋 Battery % sensor (required)",
+          "dev_charge_switch": "🔌 Charging plug switch (optional)",
+          "dev_start_pct": "Start charge % (below → charge)",
+          "dev_stop_pct": "Stop charge % (above → stop)",
+          "notify_push": "Notifica Push",
+          "notify_alexa": "Notifica Alexa",
+          "notify_google": "Notifica Google TTS",
+          "notify_whatsapp": "Notifica WhatsApp"
+        }
       }
     },
     "error": {
@@ -130,7 +149,21 @@
   "options": {
     "step": {
       "hub_costs": {
-        "title": "Hub — Costi"
+        "title": "Hub — Costs & Photovoltaic",
+        "data": {
+          "costo_kwh": "⚡ ELECTRICITY — Cost €/kWh (fixed value)",
+          "costo_kwh_sensor": "⚡ ELECTRICITY — or dynamic sensor €/kWh (takes priority)",
+          "costo_acqua_m3": "💧 WATER — Cost €/m³ (fixed value)",
+          "costo_acqua_m3_sensor": "💧 WATER — or dynamic sensor €/m³ (takes priority)",
+          "costo_gas_m3": "🔥 GAS — Cost €/m³ (fixed value)",
+          "costo_gas_m3_sensor": "🔥 GAS — or dynamic sensor €/m³ (takes priority)",
+          "vendita_kwh": "☀️ SOLAR SALE — Price €/kWh sold to grid (Solar preset only)",
+          "vendita_kwh_sensor": "☀️ SOLAR SALE — or dynamic sensor €/kWh (takes priority)",
+          "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
+          "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
+        },
+        "description": "For each resource: set the fixed value OR select a sensor (sensor takes priority). At the bottom, Photovoltaic splits consumption between grid (cost) and solar (saving)."
       },
       "hub_notifications": {
         "title": "Hub — Notifiche"

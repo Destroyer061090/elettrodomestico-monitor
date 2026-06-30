@@ -9,6 +9,10 @@ reset_sensors:
       selector:
         text:
 
+reset_all_sensors:
+  name: Reset Tutti i Sensori
+  description: Azzera in un colpo solo i contatori e le statistiche di TUTTI i dispositivi configurati (l'Hub e' escluso). Operazione non reversibile.
+
 set_maintenance:
   name: Imposta Manutenzione
   description: Registra la data/ora dell'ultima manutenzione per un dispositivo.

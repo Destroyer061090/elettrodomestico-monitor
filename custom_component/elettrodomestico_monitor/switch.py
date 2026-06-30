@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    switch.py
-# VERSION: 5.0.4
+# VERSION: 5.4.0
 # DESC:    Switch platform — main device switch, irrigation master/zone/day switches
 # CHANGED: 2026-06-11
 # ============================================================
@@ -12,7 +12,7 @@ Per device:
   switch.notifica_alexa_elettrodomestici_xN
   switch.notifica_google_elettrodomestici_xN
   switch.notifica_whatsapp_elettrodomestici_xN
-  switch.notifica_update_elettrodomestici_xN
+  switch.notifica_update_elettrodomestici_hub  (hub-managed, single toggle)
 
 Il comando principale (_MainSwitch) delega al coordinator._sw() che gestisce:
   - Elettrodomestico/Acqua/Gas → switch.turn_on/off su CONF_SWITCH_ENTITY
@@ -32,6 +32,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    VERSION,
     DOMAIN, CONF_INSTANCE_ID, CONF_APPLIANCE_NAME, CONF_SLOT,
     CONF_SWITCH_ENTITY, CONF_PRESET,
     CONF_NOTIFY_PUSH, CONF_NOTIFY_ALEXA, CONF_NOTIFY_GOOGLE,
@@ -49,16 +50,66 @@ _LOGGER = logging.getLogger(__name__)
 _TRIGGER_PRESETS = {"vacuum", "clima"}
 
 
+def _hub_device_info():
+    return DeviceInfo(
+        identifiers={(DOMAIN, "hub")},
+        name="Elettrodomestico Monitor Hub",
+        manufacturer="Elettrodomestico Monitor",
+        model="Hub Globale",
+    )
+
+
+class _HubUpdateNotifySwitch(SwitchEntity, RestoreEntity):
+    """Single hub-level toggle for update push notifications.
+    Shared by all devices — update checking is hub-managed."""
+
+    def __init__(self, entry):
+        self._entry = entry
+        self._on: bool = bool(entry.data.get("notify_update", True))
+        self._attr_unique_id       = f"{DOMAIN}_hub_notifica_update"
+        self.entity_id             = "switch.notifica_update_elettrodomestici_hub"
+        self._attr_name            = "Notifica Aggiornamenti"
+        self._attr_icon            = "mdi:bell-ring"
+        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_device_info     = _hub_device_info()
+
+    async def async_added_to_hass(self) -> None:
+        last = await self.async_get_last_state()
+        if last and last.state in ("on", "off"):
+            self._on = last.state == "on"
+
+    @property
+    def is_on(self) -> bool:
+        return self._on
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self._on = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self._on = False
+        self.async_write_ha_state()
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
+        # Hub-managed single update-notification toggle (shared by all devices)
+        async_add_entities([_HubUpdateNotifySwitch(entry)])
         return
     # Irrigation
     from .const import ENTRY_TYPE_IRRIGATION
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_IRRIGATION or        entry.data.get("entry_type") == "irrigation":
         coord = hass.data[DOMAIN][entry.entry_id]
         await _async_setup_irrigation_switch(hass, entry, coord, async_add_entities)
+        return
+    # Battery Device
+    from .const import ENTRY_TYPE_DEVICE
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_DEVICE or \
+            entry.data.get("entry_type") == "device":
+        coord = hass.data[DOMAIN][entry.entry_id]
+        await _async_setup_device_switch(hass, entry, coord, async_add_entities)
         return
     coord: ElettrodomesticoCoordinator = hass.data[DOMAIN][entry.entry_id]
     name  = entry.data.get(CONF_APPLIANCE_NAME, "Elettrodomestico")
@@ -85,8 +136,6 @@ async def async_setup_entry(
                       f"Notifica Google {name}",        CONF_NOTIFY_GOOGLE,  "mdi:google",            False),
         _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_WHATSAPP,
                       f"Notifica WhatsApp {name}",      CONF_NOTIFY_WHATSAPP,"mdi:whatsapp",          False),
-        _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_UPDATE,
-                      f"Notifica Aggiornamenti {name}", CONF_NOTIFY_UPDATE,  "mdi:bell-ring",         False),
     ]
     async_add_entities(entities)
 
@@ -159,7 +208,7 @@ async def _async_setup_irrigation_switch(
 
         @property
         def is_on(self) -> bool:
-            return coord.config.get("irr_sched_enabled", True)
+            return coord.config.get("irr_sched_enabled") is not False
 
         async def async_turn_on(self, **kw):
             conf = dict(coord.config); conf["irr_sched_enabled"] = True
@@ -240,7 +289,22 @@ async def _async_setup_irrigation_switch(
     for day_key, day_label in days_it:
         sw_entities.append(_DaySwitch(day_key, day_label))
 
-    _LOGGER.info("[IRR] Creating %d irrigation switches (1 master + %d zones + 21 day toggles)",
+    # Notification toggle switches (push/alexa/google/whatsapp) — same as appliances
+    from .const import (
+        SFX_SW_NOTIFY_PUSH, SFX_SW_NOTIFY_ALEXA,
+        SFX_SW_NOTIFY_GOOGLE, SFX_SW_NOTIFY_WHATSAPP,
+        CONF_NOTIFY_PUSH, CONF_NOTIFY_ALEXA, CONF_NOTIFY_GOOGLE, CONF_NOTIFY_WHATSAPP,
+    )
+    _irr_notify = [
+        (SFX_SW_NOTIFY_PUSH,     f"Notifica Push {name}",     CONF_NOTIFY_PUSH,     "mdi:cellphone"),
+        (SFX_SW_NOTIFY_ALEXA,    f"Notifica Alexa {name}",    CONF_NOTIFY_ALEXA,    "mdi:amazon-alexa"),
+        (SFX_SW_NOTIFY_GOOGLE,   f"Notifica Google {name}",   CONF_NOTIFY_GOOGLE,   "mdi:google-home"),
+        (SFX_SW_NOTIFY_WHATSAPP, f"Notifica WhatsApp {name}", CONF_NOTIFY_WHATSAPP, "mdi:whatsapp"),
+    ]
+    for _sfx, _label, _conf, _icon in _irr_notify:
+        sw_entities.append(_NotifySwitch(entry, name, slot, _sfx, _label, _conf, _icon, False))
+
+    _LOGGER.info("[IRR] Creating %d irrigation switches (1 master + %d zones + 21 day toggles + 4 notify)",
                  len(sw_entities), len(zones))
     async_add_entities(sw_entities, update_before_add=True)
 
@@ -251,7 +315,7 @@ def _device(entry, name):
         name=name,
         manufacturer="Elettrodomestico Monitor",
         model="Centro Controllo",
-        sw_version="4.22",
+        sw_version=VERSION,
     )
 
 
@@ -355,3 +419,82 @@ class _NotifySwitch(SwitchEntity, RestoreEntity):
         self.async_write_ha_state()
 
 
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Battery Device switches
+# ════════════════════════════════════════════════════════════════════════════
+
+def _device_dev_info(entry, name):
+    iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
+    return DeviceInfo(
+        identifiers={(DOMAIN, iid)},
+        name=name,
+        manufacturer="Elettrodomestico Monitor",
+        model="Centro Controllo Dispositivi",
+    )
+
+
+async def _async_setup_device_switch(hass, entry, coord, async_add_entities):
+    name = entry.data.get(CONF_APPLIANCE_NAME, "Dispositivo")
+    slot = str(entry.data.get(CONF_SLOT, "1"))
+    ents = [
+        _DevChargeSwitch(coord, entry, name, slot),
+        _DevAutoSwitch(entry, name, slot),
+        _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_PUSH,
+                      f"Notifica Push {name}",     CONF_NOTIFY_PUSH,    "mdi:cellphone-message", False),
+        _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_ALEXA,
+                      f"Notifica Alexa {name}",    CONF_NOTIFY_ALEXA,   "mdi:amazon-alexa",      False),
+        _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_GOOGLE,
+                      f"Notifica Google {name}",   CONF_NOTIFY_GOOGLE,  "mdi:google",            False),
+        _NotifySwitch(entry, name, slot, SFX_SW_NOTIFY_WHATSAPP,
+                      f"Notifica WhatsApp {name}", CONF_NOTIFY_WHATSAPP,"mdi:whatsapp",          False),
+    ]
+    async_add_entities(ents)
+
+
+class _DevChargeSwitch(CoordinatorEntity, SwitchEntity):
+    """Mirrors/controls the real charging plug switch."""
+    def __init__(self, coord, entry, name, slot):
+        super().__init__(coord)
+        self._coord = coord
+        iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
+        self._attr_unique_id   = f"{DOMAIN}_{iid}_carica_dispositivo_x{slot}"
+        self.entity_id         = f"switch.carica_dispositivo_x{slot}"
+        self._attr_name        = f"Carica {name}"
+        self._attr_icon        = "mdi:power-plug"
+        self._attr_device_info = _device_dev_info(entry, name)
+
+    @property
+    def is_on(self) -> bool:
+        return bool((self.coordinator.data or {}).get("charging", False))
+
+    async def async_turn_on(self, **kw):
+        await self._coord._set_charge(True)
+        await self._coord.async_request_refresh()
+
+    async def async_turn_off(self, **kw):
+        await self._coord._set_charge(False)
+        await self._coord.async_request_refresh()
+
+
+class _DevAutoSwitch(SwitchEntity, RestoreEntity):
+    """Enable/disable automatic charge management (persisted)."""
+    def __init__(self, entry, name, slot):
+        self._on = True
+        iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
+        self._attr_unique_id       = f"{DOMAIN}_{iid}_ricarica_auto_dispositivo_x{slot}"
+        self.entity_id             = f"switch.ricarica_auto_dispositivo_x{slot}"
+        self._attr_name            = f"Ricarica Automatica {name}"
+        self._attr_icon            = "mdi:battery-sync"
+        self._attr_device_info     = _device_dev_info(entry, name)
+
+    async def async_added_to_hass(self):
+        last = await self.async_get_last_state()
+        if last and last.state in ("on", "off"):
+            self._on = last.state == "on"
+
+    @property
+    def is_on(self): return self._on
+    async def async_turn_on(self, **kw): self._on = True; self.async_write_ha_state()
+    async def async_turn_off(self, **kw): self._on = False; self.async_write_ha_state()

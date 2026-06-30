@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    hub.py
-# VERSION: 5.0.0
+# VERSION: 5.8.6
 # DESC:    Hub config reader — global settings (costs, notify, schedule)
 # CHANGED: 2026-06-11
 # ============================================================
@@ -24,11 +24,18 @@ from .presets import COST_KEY_KWH, COST_KEY_ACQUA, COST_KEY_GAS, COST_KEY_VENDIT
 
 _BAD = {STATE_UNAVAILABLE, STATE_UNKNOWN, None, "", "unknown", "unavailable"}
 
+# Remember the last valid reading per cost sensor. When a price sensor briefly
+# goes unavailable (e.g. a cloud energy-price sensor while internet is down),
+# we keep the last good value instead of flipping to the fixed fallback. That
+# flip changed costo_eur/fonte_costo on every energy sensor of every device and
+# flooded the WebSocket ('4096 pending messages').
+_LAST_GOOD_COST: dict[str, float] = {}
+
 
 def _resolve(hass: HomeAssistant, hub_data: dict,
              fixed_key: str, sensor_key: str,
              default: float = 0.0) -> tuple[float, str]:
-    """Resolve cost: sensor (if valid entity id) > fixed value > default."""
+    """Resolve cost: sensor (if valid) > last good sensor value > fixed."""
     fixed = float(hub_data.get(fixed_key) or default)
     sid   = hub_data.get(sensor_key) or ""   # guard against None
     sid   = sid.strip()
@@ -36,9 +43,15 @@ def _resolve(hass: HomeAssistant, hub_data: dict,
         st = hass.states.get(sid)
         if st and st.state not in _BAD:
             try:
-                return float(st.state), "sensore"
+                val = float(st.state)
+                _LAST_GOOD_COST[sid] = val
+                return val, "sensore"
             except (ValueError, TypeError):
                 pass
+        # Sensor temporarily unavailable: reuse the last good value if we have
+        # one, so the cost (and every dependent attribute) stays stable.
+        if sid in _LAST_GOOD_COST:
+            return _LAST_GOOD_COST[sid], "sensore"
         return fixed, "fisso (fallback)"
     return fixed, "fisso"
 
@@ -71,6 +84,10 @@ def get_hub_config(hass: HomeAssistant) -> dict[str, Any]:
         "alexa_targets":     hub_data.get(CONF_ALEXA_TARGETS, []) or [],
         "google_targets":    hub_data.get(CONF_GOOGLE_TARGETS,[]) or [],
         "whatsapp_entity":   (hub_data.get(CONF_WHATSAPP_ENTITY) or "").strip(),
+        "fv_enabled":     bool(hub_data.get("fv_enabled", False)),
+        "fv_invert":      bool(hub_data.get("fv_invert", False)),
+        "fv_grid_sensor": (hub_data.get("fv_grid_sensor") or "").strip(),
+        "fv_threshold_w": float(hub_data.get("fv_threshold_w", 0.0) or 0.0),
         "auto_on_time":  hub_data.get(CONF_AUTO_ON_TIME,  DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE,
         "auto_off_time": hub_data.get(CONF_AUTO_OFF_TIME, DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE,
         "meteo_entity":  hub_data.get("meteo_entity", "") or "",

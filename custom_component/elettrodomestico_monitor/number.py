@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    number.py
-# VERSION: 5.0.4
+# VERSION: 5.8.1
 # DESC:    Number platform — configurable thresholds, zone durations
 # CHANGED: 2026-06-11
 # ============================================================
@@ -41,22 +41,47 @@ async def async_setup_entry(
         coord = hass.data[DOMAIN][entry.entry_id]
         await _async_setup_irrigation_numbers(hass, entry, coord, async_add_entities)
         return
-    from .const import ENTRY_TYPE_IRRIGATION
-    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_IRRIGATION or        entry.data.get("entry_type") == "irrigation":
-        coord = hass.data[DOMAIN][entry.entry_id]
-        await _async_setup_irrigation_numbers(hass, entry, coord, async_add_entities)
+    from .const import ENTRY_TYPE_DEVICE
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_DEVICE or \
+            entry.data.get("entry_type") == "device":
+        name = entry.data.get(CONF_APPLIANCE_NAME, "Dispositivo")
+        slot = str(entry.data.get(CONF_SLOT, "1"))
+        iid  = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
+        from .const import (CONF_DEV_START_PCT, CONF_DEV_STOP_PCT,
+                            DEFAULT_DEV_START_PCT, DEFAULT_DEV_STOP_PCT)
+        async_add_entities([
+            _NumberEntity(entry, name, slot, iid, sfx="soglia_avvio_carica",
+                          label=f"Soglia Avvio Carica {name}", min_val=1, max_val=100, step=1.0,
+                          unit="%", icon="mdi:battery-10", conf_key=CONF_DEV_START_PCT,
+                          default=float(entry.data.get(CONF_DEV_START_PCT, DEFAULT_DEV_START_PCT))),
+            _NumberEntity(entry, name, slot, iid, sfx="soglia_stop_carica",
+                          label=f"Soglia Stop Carica {name}", min_val=1, max_val=100, step=1.0,
+                          unit="%", icon="mdi:battery-charging-100", conf_key=CONF_DEV_STOP_PCT,
+                          default=float(entry.data.get(CONF_DEV_STOP_PCT, DEFAULT_DEV_STOP_PCT))),
+        ])
         return
     name = entry.data.get(CONF_APPLIANCE_NAME, "Elettrodomestico")
     slot = str(entry.data.get(CONF_SLOT, "1"))
     iid  = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
 
-    async_add_entities([
+    # Threshold unit follows the source: water → L/min, gas → m³/h, else W.
+    from .const import CONF_SOURCE_UNIT, CONF_PRESET
+    from .presets import get_preset
+    try:
+        _preset = get_preset(entry.data.get(CONF_PRESET, ""))
+        _src_unit = entry.data.get(CONF_SOURCE_UNIT) or _preset.source_unit
+    except Exception:  # noqa: BLE001
+        _src_unit = entry.data.get(CONF_SOURCE_UNIT, "W")
+    _thr_unit = _src_unit if _src_unit in ("L/min", "l/min", "m³/h", "m3/h") else "W"
+    _thr_max  = 5000 if _thr_unit == "W" else 1000
+
+    entities = [
         _NumberEntity(
             entry, name, slot, iid,
             sfx       = SFX_NUM_SOGLIA,
-            label     = f"Soglia Lavoro {name} W",
-            min_val   = 0, max_val = 5000, step = 1.0,
-            unit      = "W",
+            label     = f"Soglia Lavoro {name} {_thr_unit}",
+            min_val   = 0, max_val = _thr_max, step = 1.0,
+            unit      = _thr_unit,
             icon      = "mdi:flash",
             conf_key  = CONF_WORK_THRESHOLD_W,
             default   = float(DEFAULT_THRESHOLD_W),
@@ -81,7 +106,27 @@ async def async_setup_entry(
             conf_key  = CONF_START_DELAY_S,
             default   = float(DEFAULT_START_DELAY_S),
         ),
-    ])
+    ]
+    # Vacuum-only: battery return threshold (0 = disabled), editable from the card
+    from .const import CONF_VACUUM_ENTITY, CONF_VACUUM_RETURN_PCT
+    if (entry.data.get(CONF_VACUUM_ENTITY) or "").strip():
+        try:
+            _ret_default = float(entry.data.get(CONF_VACUUM_RETURN_PCT, 0) or 0)
+        except (ValueError, TypeError):
+            _ret_default = 0.0
+        _LOGGER.info("[EM Number] Creo soglia rientro batteria per vacuum x%s "
+                     "(entity_id atteso: number.soglia_rientro_vacuum_x%s)", slot, slot)
+        entities.append(_NumberEntity(
+            entry, name, slot, iid,
+            sfx       = "soglia_rientro_vacuum",
+            label     = f"Soglia Rientro Batteria {name}",
+            min_val   = 0, max_val = 100, step = 1.0,
+            unit      = "%",
+            icon      = "mdi:battery-alert",
+            conf_key  = CONF_VACUUM_RETURN_PCT,
+            default   = _ret_default,
+        ))
+    async_add_entities(entities)
 
 
 def _device(entry, name):
@@ -126,7 +171,10 @@ class _NumberEntity(NumberEntity, RestoreEntity):
             except (ValueError, TypeError):
                 pass
         # Fall back to config entry value
-        self._current_value = float(self._entry.data.get(self._conf_key, self._default))
+        try:
+            self._current_value = float(self._entry.data.get(self._conf_key, self._default))
+        except (ValueError, TypeError):
+            self._current_value = float(self._default)
 
     @property
     def native_value(self) -> float:

@@ -1,8 +1,25 @@
 # Elettrodomestico Monitor
 
-Custom integration per Home Assistant per monitorare elettrodomestici, vacuum, clima e irrigazione.
+Custom integration per Home Assistant che monitora consumi, costi e cicli di
+elettrodomestici, climatizzatori, vacuum robot, impianti di irrigazione
+multi-zona e dispositivi a batteria, con supporto fotovoltaico e notifiche
+multi-canale.
 
-**Versione:** v5.0 | **HA minima:** 202v5.0 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
+**Versione:** 5.7.0 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
+
+---
+
+## Cosa fa
+
+Trasforma i sensori di potenza, portata e batteria che hai gia in casa in un
+sistema unificato che misura, contabilizza e visualizza:
+
+- consumi energetici (kWh) ed economici (EUR) per ogni dispositivo;
+- separazione tra energia prelevata dalla **rete** e autoconsumo **solare**
+  (fotovoltaico), con costi e risparmi distinti;
+- consumo idrico reale (litri) e costo pompa per l'irrigazione;
+- cicli, durate e statistiche per oggi / mese / anno e periodi precedenti;
+- gestione automatica della ricarica di dispositivi a batteria entro soglie.
 
 ---
 
@@ -10,155 +27,93 @@ Custom integration per Home Assistant per monitorare elettrodomestici, vacuum, c
 
 1. Copia la cartella `elettrodomestico_monitor` in `/config/custom_components/`
 2. Riavvia Home Assistant
-3. Vai in **Impostazioni → Integrazioni → Aggiungi** → cerca "Elettrodomestico Monitor"
-4. Configura l'Hub Globale (costi, notifiche, orari)
-5. Aggiungi device uno alla volta o tramite Import
+3. Vai in **Impostazioni > Integrazioni > Aggiungi** e cerca "Elettrodomestico Monitor"
+4. Configura l'Hub Globale (tariffe EUR/kWh ed EUR/m3, sensore fotovoltaico, notifiche, orari)
+5. Aggiungi i device uno alla volta, oppure usa l'**Import** di una configurazione esistente
+
+> **Dashboard in modalita YAML:** la registrazione automatica delle risorse
+> Lovelace non e supportata da Home Assistant in questa modalita. Aggiungi
+> manualmente le tre risorse JavaScript indicate nel log (e normale, non e un errore).
+
+---
+
+## Architettura in breve
+
+| Componente | Ruolo |
+|------------|-------|
+| **Hub Globale** | Configurazione condivisa: tariffe, sensore FV, target notifiche, finestra oraria |
+| **Appliance** | Elettrodomestici, clima, acqua, vacuum (preset dedicati) |
+| **Irrigation** | Impianti multi-zona con scheduling settimanale e conteggio litri/kWh |
+| **Device** | Gestione ricarica batterie con isteresi di soglia |
+
+Ogni device ha un proprio coordinator e una propria persistenza isolata
+(`instance_id` univoco). I costi rete/sole, i contatori e i cicli sono esposti
+come **sensori dedicati** (non solo attributi), cosi sono cliccabili e tracciabili
+nei grafici nativi di Home Assistant.
 
 ---
 
 ## Tipi di Device (Preset)
 
-| Preset | Unità | Uso tipico |
-|--------|-------|-----------|
-| Elettrodomestico | W → kWh | Lavatrice, lavastoviglie, forno |
-| Acqua | L/min → L | Boiler, addolcitore |
-| Gas | m³/h → m³ | Caldaia, cucina |
-| Vacuum | — | Robot aspirapolvere (Roomba, K2T) |
-| Clima | W → kWh | Split, pompa di calore |
-| Irrigazione | L/min → L + W → kWh | Irrigazione con pompa sommersa |
-| Generico | personalizzabile | Qualsiasi altro device |
+| Preset | Unita | Note |
+|--------|-------|------|
+| `elettrodomestico` | kWh | Generico, basato su sensore di potenza |
+| `clima` | kWh | Tracciamento via entita climate |
+| `acqua` | L | Volume + opzionale m3 |
+| `gas` | m3 | Costo gas |
+| `vacuum` | kWh | Stato e batteria del robot |
+| `irrigazione` | L + kWh | Multi-zona, scheduling, pompa |
+| `dispositivo` | % + cicli | Ricarica batteria con soglie start/stop |
 
 ---
 
-## Servizi HA disponibili
+## Fotovoltaico
 
-### `elettrodomestico_monitor.export_config`
-Esporta la configurazione di tutti i device in `/config/www/em_export.json`.
-Scaricabile da browser all'indirizzo `/local/em_export.json`.
-```yaml
-service: elettrodomestico_monitor.export_config
-```
-
-### `elettrodomestico_monitor.import_config`
-Importa la configurazione da un file JSON. Aggiorna i device esistenti (match per slot) o ne crea di nuovi.
-```yaml
-service: elettrodomestico_monitor.import_config
-data:
-  filename: em_export.json  # opzionale, default: em_export.json
-```
-
-### `elettrodomestico_monitor.remove_all_devices`
-Rimuove tutti i device lasciando solo l'Hub. Utile prima di un import completo da zero.
-```yaml
-service: elettrodomestico_monitor.remove_all_devices
-```
-
-### `elettrodomestico_monitor.reset_sensors`
-Azzera i contatori di un device specifico.
-```yaml
-service: elettrodomestico_monitor.reset_sensors
-data:
-  entry_id: "abc123..."  # entry_id del device
-```
-
-### `elettrodomestico_monitor.set_maintenance`
-Registra una data di manutenzione per un device.
-```yaml
-service: elettrodomestico_monitor.set_maintenance
-data:
-  entry_id: "abc123..."
-  note: "Sostituzione filtro"  # opzionale
-```
+Se abilitato nell'Hub, l'integrazione legge un sensore di potenza alla rete
+(positivo = prelievo, negativo = immissione) e ripartisce l'energia di ogni
+dispositivo tra **rete** e **solare** con un modello proporzionale. Espone costi
+rete e risparmi solari separati, per dispositivo e per periodo.
 
 ---
 
-## Workflow Import/Export
+## Notifiche
 
-**Rinominare device (da "Nome (xN)" a "(xN) Nome"):**
-1. `export_config` → scarica `/local/em_export.json`
-2. Modifica il JSON: cambia i valori `"title"` 
-3. Carica il file modificato in `/config/www/em_export.json`
-4. `import_config` → i titoli vengono aggiornati
-5. Riavvia HA
-
-**Reset completo e riconfigurazione:**
-1. `export_config` → backup della configurazione
-2. `remove_all_devices` → rimuove tutti i device
-3. Modifica il JSON se necessario
-4. `import_config` → ricrea tutti i device
-5. Riavvia HA
+Canali supportati per dispositivo: **push** (mobile app), **WhatsApp**
+(via `input_text`), **Alexa** e **Google** (TTS). I canali vocali rispettano la
+finestra oraria configurata nell'Hub. L'invio e centralizzato in un unico modulo
+(`notify_helper.py`) condiviso da tutti i coordinator.
 
 ---
 
-## Slot Convention consigliata
+## Card Lovelace
 
-| Range | Tipo |
-|-------|------|
-| x1–x99 | Elettrodomestici standard |
-| x100–x199 | Acqua / Gas / Boiler |
-| x200–x209 | Vacuum |
-| x210–x219 | Clima |
-| x220–x229 | Irrigazione |
-| x300+ | Meteo / Sensori |
+Tre custom card incluse (in `www/`):
 
----
-
-## Card Lovelace JS
-
-La card viene registrata automaticamente in Lovelace al riavvio HA.
-Documentazione completa: `www/CARD_CONFIG.md`
-
-**Configurazione minima:**
-```yaml
-type: custom:elettrodomestico-monitor-card
-slot: 1
-name: Lavastoviglie
-```
-
-**Con immagini:**
-```yaml
-type: custom:elettrodomestico-monitor-card
-slot: 1
-name: Lavastoviglie
-image_on: /local/foto-pkg/lavastoviglie_on.gif
-image_off: /local/foto-pkg/lavastoviglie_off.png
-max_power: 2200
-```
+- **elettrodomestico-monitor-card** -- card principale per appliance, clima,
+  vacuum e irrigazione: stato, statistiche, impostazioni, grafici.
+- **elettrodomestico-dispositivo-card** -- card dedicata ai dispositivi a batteria,
+  con anello di carica e statistiche ricariche.
+- **em-stat-table** -- elemento tabella stilato (Shadow DOM, immune alla
+  sanitizzazione di HA) usato per tutte le statistiche; formattazione numerica
+  localizzata (virgola decimale, 2 cifre).
 
 ---
 
-## Irrigazione con pompa sommersa
+## Servizi
 
-Configura come preset **Irrigazione** con:
-- **Sensore portata** (`power_sensor`): es. `sensor.invertekoptidrivee3_flow_rate` (L/min)
-- **Sensore pompa** (`power_sensor_2`): es. `sensor.invertekoptidrivee3_power_sensor` (W)
-- **Switch** (`switch_entity`): es. `switch.switch_totale` (opzionale)
-
-Il component traccia separatamente:
-- Litri consumati (dal sensore portata)
-- kWh pompa (dal sensore potenza)
-- Costo acqua (€/m³ dall'Hub)
+| Servizio | Descrizione |
+|----------|-------------|
+| `reset_sensors` | Azzera i contatori di un device (per `entry_id`) |
+| `set_maintenance` | Registra una manutenzione con data |
+| `export_config` | Esporta la configurazione completa (hub + device) |
+| `import_config` | Importa una configurazione |
+| `irrigation_start` / `irrigation_stop` | Avvio/stop manuale ciclo irrigazione |
 
 ---
 
-## Entità create per device
+## Note tecniche
 
-Ogni device crea automaticamente:
-- `sensor.time_on_elettrodomestici_xN` — sensore master con tutti gli attributi
-- `sensor.potenza_elettrodomestici_w_xN` — potenza/flusso istantaneo
-- `sensor.energy_oggi/mese/anno_xN` — consumi periodici
-- `sensor.cicli_oggi/mese/anno/totale_xN` — contatori cicli
-- `sensor.costo_oggi/mese/anno_xN` — costi periodici
-- `binary_sensor.ac_elettrodomestici_xN` — stato ciclo ON/OFF
-- `switch.switch_elettrodomestici_xN` — comando principale
-- `time.orario_accensione/spegnimento_xN` — orari automatici
-- `vacuum.elettrodomestici_xN` — solo preset Vacuum
-- `climate.elettrodomestici_xN` — solo preset Clima
-
----
-
-## Note
-
-- **Icona custom component**: non visibile nella pagina integrazioni HA (limitazione HA per custom component non nel registro ufficiale)
-- **Risorsa JS**: registrata automaticamente con versioning (`?v=X.XX`) per evitare cache browser
-- **Migration**: al riavvio HA verifica e aggiorna automaticamente i config entry con chiavi mancanti (non distruttivo)
+- Risorsa JS registrata con versioning (`?v=X.Y.Z`) per evitare la cache del browser.
+- Dopo ogni aggiornamento, svuota la cache; per nuovi sensori puo servire un riavvio di HA.
+- I grafici dei sensori nuovi si popolano nel tempo (lo storico parte dalla creazione).
+- Naming entita centralizzato in `naming.py` (Python) con guard anti doppio-prefisso.

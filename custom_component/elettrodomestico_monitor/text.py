@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    text.py
-# VERSION: 5.0.4
+# VERSION: 5.4.0
 # DESC:    Text platform — device name entities
 # CHANGED: 2026-06-11
 # ============================================================
@@ -42,6 +42,22 @@ async def async_setup_entry(
             return
     except (ImportError, KeyError):
         pass
+    try:
+        from .const import ENTRY_TYPE_DEVICE
+        if (entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_DEVICE or
+                entry.data.get("entry_type") == "device"):
+            name = entry.data.get(CONF_APPLIANCE_NAME, "Dispositivo")
+            slot = str(entry.data.get(CONF_SLOT, "1"))
+            iid  = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
+            async_add_entities([
+                _TextEntity(entry, name, slot, iid, sfx="nome_dispositivo",
+                            label=f"Nome {name}", icon="mdi:label-outline",
+                            conf_key=CONF_APPLIANCE_NAME, default=name, max_len=50),
+            ])
+            return
+    except (ImportError, KeyError):
+        pass
+
     name = entry.data.get(CONF_APPLIANCE_NAME, "Elettrodomestico")
     slot = str(entry.data.get(CONF_SLOT, "1"))
     iid  = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))

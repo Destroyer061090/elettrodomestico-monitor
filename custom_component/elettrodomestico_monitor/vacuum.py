@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    vacuum.py
-# VERSION: 5.0.4
+# VERSION: 5.7.25
 # DESC:    Vacuum platform — vacuum wrapper entity for vacuum preset devices
 # CHANGED: 2026-06-11
 # ============================================================
@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN, CONF_INSTANCE_ID, CONF_APPLIANCE_NAME, CONF_SLOT,
-    CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR,
+    CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR, CONF_VACUUM_RETURN_PCT,
     ENTRY_TYPE_HUB, CONF_ENTRY_TYPE, CONF_PRESET,
 )
 from .coordinator import ElettrodomesticoCoordinator
@@ -95,22 +95,44 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
     entity_id: vacuum.elettrodomestici_xN
     """
 
-    _attr_supported_features = (
-        VacuumEntityFeature.START
-        | VacuumEntityFeature.PAUSE
-        | VacuumEntityFeature.STOP
-        | VacuumEntityFeature.RETURN_HOME
-        | VacuumEntityFeature.STATE
-        | VacuumEntityFeature.LOCATE
-        # Note: BATTERY feature removed in HA 2026.8
-        # Battery is exposed via sensor.batteria_vacuum_xN instead
-    )
+    @property
+    def supported_features(self) -> VacuumEntityFeature:
+        """Mirror the underlying vacuum's features (crash-safe).
+        Only enables bits valid in this HA version's enum, so a robot that
+        advertises an unknown bit can't take the entity to 'unavailable'."""
+        base = (VacuumEntityFeature.START
+                | VacuumEntityFeature.PAUSE
+                | VacuumEntityFeature.STOP
+                | VacuumEntityFeature.RETURN_HOME
+                | VacuumEntityFeature.STATE
+                | VacuumEntityFeature.LOCATE)
+        st = self.hass.states.get(self._vacuum_eid) if self._vacuum_eid else None
+        if not st:
+            return base
+        feat = base
+        if st.attributes.get("fan_speed_list"):
+            feat |= VacuumEntityFeature.FAN_SPEED
+        # CLEAN_SPOT and SEND_COMMAND have methods implemented below, so enable
+        # them if the device advertises them via its mode/feature data.
+        raw = st.attributes.get("supported_features")
+        if isinstance(raw, int) and raw > 0:
+            try:
+                if hasattr(VacuumEntityFeature, "CLEAN_SPOT") and (raw & int(VacuumEntityFeature.CLEAN_SPOT)):
+                    feat |= VacuumEntityFeature.CLEAN_SPOT
+                if hasattr(VacuumEntityFeature, "SEND_COMMAND") and (raw & int(VacuumEntityFeature.SEND_COMMAND)):
+                    feat |= VacuumEntityFeature.SEND_COMMAND
+            except (ValueError, TypeError):
+                pass
+        return feat
 
     def __init__(self, coord, entry, name, slot):
         super().__init__(coord)
         self._entry        = entry
+        self._slot         = str(slot)
         self._vacuum_eid   = (entry.data.get(CONF_VACUUM_ENTITY) or "").strip()
         self._battery_eid  = (entry.data.get(CONF_BATTERY_SENSOR) or "").strip()
+        self._return_pct   = int(entry.data.get(CONF_VACUUM_RETURN_PCT, 0) or 0)
+        self._return_armed = True
         iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
 
         self._attr_unique_id   = f"{DOMAIN}_{iid}_{SFX_VACUUM}_vacuum_x{slot}"
@@ -141,7 +163,65 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
 
     @callback
     def _on_battery_state(self, event) -> None:
+        self._check_battery_return()
         self.async_write_ha_state()
+
+    def _check_battery_return(self) -> None:
+        """If a return threshold is set and the battery drops to/below it while
+        the robot is actively cleaning, send it back to base. Fires once per
+        discharge cycle (re-armed when the battery climbs back above threshold).
+
+        The threshold is read live from the number entity (editable from the
+        card), falling back to the value stored at setup."""
+        pct = self._return_pct
+        num_st = self.hass.states.get(f"number.soglia_rientro_vacuum_x{self._slot}")
+        if num_st and num_st.state not in ("unknown", "unavailable", ""):
+            try:
+                pct = int(float(num_st.state))
+            except (ValueError, TypeError):
+                pass
+        if not pct or pct <= 0:
+            return
+        if not self._battery_eid:
+            return
+        st = self.hass.states.get(self._battery_eid)
+        if not st or st.state in ("unknown", "unavailable", ""):
+            return
+        try:
+            level = float(st.state)
+        except (ValueError, TypeError):
+            return
+        # Re-arm once we're comfortably above the threshold again
+        if level > pct + 2:
+            self._return_armed = True
+        if not self._return_armed:
+            return
+        if level > pct:
+            return
+        # Only act if the robot is actually cleaning (not already docked/idle)
+        vst = self.hass.states.get(self._vacuum_eid) if self._vacuum_eid else None
+        state = vst.state if vst else None
+        if state not in ("cleaning", "running", "on"):
+            return
+        self._return_armed = False
+        _LOGGER.info("[Vacuum x%s] Batteria %.0f%% <= soglia %.0f%% → rientro alla base",
+                     self._slot, level, pct)
+        self.hass.async_create_task(self._battery_return_and_notify(level))
+
+    async def _battery_return_and_notify(self, level: float) -> None:
+        try:
+            await self._call_vacuum("return_to_base")
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.warning("[Vacuum x%s] return_to_base fallito: %s", self._slot, ex)
+        # Notify via the coordinator's shared channels, if available
+        notify = getattr(self.coordinator, "_notify", None)
+        if callable(notify):
+            try:
+                await notify(
+                    f"Batteria al {level:.0f}% — rientro alla base",
+                    self._device_name() if hasattr(self, "_device_name") else "Aspirapolvere")
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── State ─────────────────────────────────────────────────────────────────
 
@@ -226,3 +306,12 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
         await self._call_vacuum("set_fan_speed", fan_speed=fan_speed)
+
+    async def async_clean_spot(self, **kwargs) -> None:
+        await self._call_vacuum("clean_spot")
+
+    async def async_send_command(self, command: str, params=None, **kwargs) -> None:
+        data = {"command": command}
+        if params is not None:
+            data["params"] = params
+        await self._call_vacuum("send_command", **data)

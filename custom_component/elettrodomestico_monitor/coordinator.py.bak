@@ -1,9 +1,3 @@
-# ============================================================
-# FILE:    coordinator.py
-# VERSION: 5.8.3
-# DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
-# CHANGED: 2026-06-11
-# ============================================================
 """Coordinator for Elettrodomestico Monitor v9.
 
 Key addition vs v8: optional CONF_TRIGGER_ENTITY
@@ -32,7 +26,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    VACUUM_ACTIVE_STATES, VACUUM_INACTIVE_STATES,
+    VACUUM_ACTIVE_STATES,
     DOMAIN, VERSION, COORDINATOR_UPDATE_INTERVAL,
     CONF_POWER_SENSOR, CONF_SWITCH_ENTITY, CONF_TRIGGER_ENTITY,
     CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR,
@@ -53,7 +47,6 @@ from .const import (
     DEFAULT_SCHEDULE,
 )
 from .hub import get_hub_config
-from .notify_helper import async_send_notification
 from .presets import get_preset
 from .storage import ElettrodomesticoStorage
 
@@ -101,38 +94,33 @@ def _enabled(t: str) -> bool:
     return not (h == 0 and m == 0)
 
 
-def _entity_is_active(state_str: str | None, is_vacuum: bool = False) -> bool:
-    """Return True if an external trigger entity should be considered active.
-    
-    For vacuum: uses inverse logic — active = anything NOT in VACUUM_INACTIVE_STATES.
-    This handles all robot brands including Chinese robots with non-standard states
-    like smart_cleaning, zone_cleaning, spot_cleaning, goto_target, etc.
-    """
-    if not state_str:
-        return False
-    s = state_str.lower()
-    if s in ("unavailable", "unknown", ""):
-        return False
+def _entity_is_active(state_str: str, is_vacuum: bool = False) -> bool:
+    """Return True if an external trigger entity should be considered active."""
     if is_vacuum:
-        return s not in VACUUM_INACTIVE_STATES
-    return s not in _INACTIVE_STATES
+        return state_str.lower() in VACUUM_ACTIVE_STATES
+    return state_str.lower() not in _INACTIVE_STATES
 
 
 class ElettrodomesticoCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry       = entry
+        # Note: self.config is a property → always reads fresh entry.data
+        # This ensures migration changes are seen without restart
         self.instance_id = self.config[CONF_INSTANCE_ID]
         self.slot        = str(self.config.get(CONF_SLOT, "1"))
         self.preset_id   = self.config.get(CONF_PRESET, "elettrodomestico")
         self.preset      = get_preset(self.preset_id)
         self.storage     = ElettrodomesticoStorage(hass, self.instance_id)
 
+        # Whether this device uses an external trigger entity
         self._trigger_entity: str = (self.config.get(CONF_TRIGGER_ENTITY) or "").strip()
         self._use_trigger_entity: bool = bool(self._trigger_entity)
+        # Preset flags — set all together to avoid NameError in methods
         self._is_vacuum:  bool = (self.preset_id == "vacuum")
         self._is_clima:   bool = (self.preset_id == "clima")
         self._is_battery: bool = (self.preset_id == "batteria")
+        # Power sensor may be placeholder (== trigger entity) for vacuum/no-power devices
         _psensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
         self._has_real_power: bool = bool(_psensor) and (_psensor != self._trigger_entity)
 
@@ -142,17 +130,12 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=COORDINATOR_UPDATE_INTERVAL),
         )
 
-        self._power_w:        float = 0.0
-        self._power2_w:       float = 0.0
-        self._shared_power:   float = 0.0   # written by master coordinator
-        self._power_share:    float = 1.0   # kept for compatibility
-        self._sensor_online:  bool  = True
-        # Offline-notification state: last reported online status and a debounce
-        # timestamp so brief sensor flickers don't spam notifications.
-        self._last_online_notified: bool = True
-        self._offline_since: float | None = None
-        self._last_pushed: dict | None = None
-        self._ac_state:       bool  = False
+        self._power_w:       float = 0.0
+        self._power2_w:     float = 0.0  # second sensor (pump kWh for irrigazione)
+        # Power share: computed dynamically based on how many devices share this sensor
+        self._power_share: float = 1.0  # updated each tick by _update_power_share()
+        self._sensor_online: bool  = True
+        self._ac_state:      bool  = False
         self._ac_pending_on:  asyncio.TimerHandle | None = None
         self._ac_pending_off: asyncio.TimerHandle | None = None
         self._cycle_active:    bool  = False
@@ -160,9 +143,6 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._cycle_start_ts:  float = 0.0
         self._acc_total  = 0.0
         self._e_today    = self._e_month = self._e_year = 0.0
-        # FV: energy split into grid-sourced and solar-sourced (kWh)
-        self._eg_today   = self._eg_month = self._eg_year = 0.0  # grid energy
-        self._es_today   = self._es_month = self._es_year = 0.0  # solar energy
         self._t_today    = self._t_month = self._t_year = 0.0
         self._c_today    = self._c_month = self._c_year = 0
         self._last_int_ts:    float | None = None
@@ -172,36 +152,10 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._unsub_auto_on:  Any  = None
         self._unsub_auto_off: Any  = None
 
-    def _get_all_coordinators_same_sensor(self):
-        """Return all coordinators that share the same power sensor."""
-        all_coords = []
-        for obj in self.hass.data.get(DOMAIN, {}).values():
-            if hasattr(obj, "instance_id") and hasattr(obj, "config"):
-                all_coords.append(obj)
-        my_sensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
-        if not my_sensor:
-            return [self]
-        same = []
-        for coord in all_coords:
-            try:
-                if (coord.config.get(CONF_POWER_SENSOR) or "").strip() == my_sensor:
-                    same.append(coord)
-            except Exception:
-                continue
-        return same if same else [self]
-
-    def _is_device_active(self) -> bool:
-        """Determine if this device is active."""
-        trigger = (self.config.get(CONF_TRIGGER_ENTITY) or "").strip()
-        if not trigger:
-            return False
-        st = self.hass.states.get(trigger)
-        if not st:
-            return False
-        return _entity_is_active(st.state, self.config.get(CONF_PRESET) == "vacuum")
-
+    # ── Config property (always fresh) ──────────────────────────────────────
     @property
     def config(self) -> dict:
+        """Always read from entry.data so migration changes are visible."""
         return self.entry.data
 
     # ── Entity readers ────────────────────────────────────────────────────────
@@ -210,7 +164,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         st = self.hass.states.get(f"number.{sfx}_x{self.slot}")
         if st and st.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
             try: return float(st.state)
-            except Exception: pass
+            except: pass
         return default
 
     def _txt(self, sfx, default=""):
@@ -230,13 +184,6 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
 
     @property
     def _threshold(self):
-        # For flow-based sources (water/gas), any consumption > 0 means active delivery.
-        # The physical switch is often fictitious — instantaneous flow is what matters.
-        src = self.config.get(CONF_SOURCE_UNIT, self.preset.source_unit)
-        if src in ("L/min", "l/min", "m³/h", "m3/h"):
-            # Low threshold so any real flow registers as an active cycle.
-            # User-configured number entity still overrides if set above 0.
-            return self._num(SFX_NUM_SOGLIA, float(self.config.get(CONF_WORK_THRESHOLD_W, 0.1)))
         return self._num(SFX_NUM_SOGLIA, float(self.config.get(CONF_WORK_THRESHOLD_W, DEFAULT_THRESHOLD_W)))
 
     @property
@@ -274,66 +221,116 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         return 1.0 / 1000.0 if src in ("L/min","l/min") else 1.0
 
     def _resolve_schedule(self) -> tuple[str, str]:
+        """
+        Priority order:
+        1. Time entities (user can edit live in HA)
+        2. Config entry local schedule (if CONF_SCHEDULE_OVERRIDE)
+        3. Hub global schedule
+        """
         t_on  = self._time_str(SFX_TIME_AUTO_ON)
         t_off = self._time_str(SFX_TIME_AUTO_OFF)
         if _enabled(t_on) or _enabled(t_off):
+            _LOGGER.debug("[%s] Schedule from time entities: on=%s off=%s",
+                          self.instance_id, t_on, t_off)
             return t_on, t_off
         if self.config.get(CONF_SCHEDULE_OVERRIDE):
-            return (self.config.get(CONF_AUTO_ON_LOCAL, DEFAULT_SCHEDULE),
-                    self.config.get(CONF_AUTO_OFF_LOCAL, DEFAULT_SCHEDULE))
+            on  = self.config.get(CONF_AUTO_ON_LOCAL,  DEFAULT_SCHEDULE)
+            off = self.config.get(CONF_AUTO_OFF_LOCAL, DEFAULT_SCHEDULE)
+            _LOGGER.debug("[%s] Schedule from config entry: on=%s off=%s",
+                          self.instance_id, on, off)
+            return on, off
         h = get_hub_config(self.hass)
-        return h.get("auto_on_time", DEFAULT_SCHEDULE), h.get("auto_off_time", DEFAULT_SCHEDULE)
+        on, off = h.get("auto_on_time", DEFAULT_SCHEDULE), h.get("auto_off_time", DEFAULT_SCHEDULE)
+        _LOGGER.debug("[%s] Schedule from Hub: on=%s off=%s", self.instance_id, on, off)
+        return on, off
+
+    # ── Trigger entity state ──────────────────────────────────────────────────
 
     def _trigger_entity_active(self) -> bool:
+        """Read external trigger entity. Returns True if 'active'."""
         if not self._use_trigger_entity: return False
         st = self.hass.states.get(self._trigger_entity)
-        if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN): return False
+        if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return False
         return _entity_is_active(st.state, self._is_vacuum)
 
     # ── Setup / Teardown ──────────────────────────────────────────────────────
 
     async def async_setup(self) -> None:
-        self._setup_ts = dt_util.utcnow().timestamp()
         await self.storage.async_load()
         self._restore()
+
+        # Register in power group for auto-sharing
         self._register_power_group()
 
+        # Track power sensor (for energy integration) — skip if not configured
         _pwr = (self.config.get(CONF_POWER_SENSOR) or "").strip()
         if _pwr and self._has_real_power:
-            self._unsub.append(async_track_state_change_event(self.hass, [_pwr], self._on_power))
-
+            self._unsub.append(
+                async_track_state_change_event(
+                    self.hass, [_pwr], self._on_power)
+            )
+        # Track second power sensor (pump kWh for irrigazione preset)
         _pwr2 = (self.config.get(CONF_POWER_SENSOR_2) or "").strip()
         if _pwr2:
-            self._unsub.append(async_track_state_change_event(self.hass, [_pwr2], self._on_power2))
+            self._unsub.append(
+                async_track_state_change_event(
+                    self.hass, [_pwr2], self._on_power2)
+            )
+            _LOGGER.info("[%s] Dual tracking: power_sensor_2 = %s",
+                         self.instance_id, _pwr2)
 
         if self._use_trigger_entity:
-            self._unsub.append(async_track_state_change_event(
-                self.hass, [self._trigger_entity], self._on_trigger_entity))
+            # Track external trigger entity for AC state
+            self._unsub.append(
+                async_track_state_change_event(
+                    self.hass, [self._trigger_entity], self._on_trigger_entity)
+            )
+            _LOGGER.info("[%s] Using trigger entity: %s", self.instance_id, self._trigger_entity)
         else:
+            # Track switch entity for sync
             sw = self.config.get(CONF_SWITCH_ENTITY)
             if sw:
-                self._unsub.append(async_track_state_change_event(self.hass, [sw], self._on_switch))
+                self._unsub.append(
+                    async_track_state_change_event(self.hass, [sw], self._on_switch))
 
-        self._unsub.append(async_track_state_change_event(
-            self.hass,
-            [f"time.{SFX_TIME_AUTO_ON}_x{self.slot}", f"time.{SFX_TIME_AUTO_OFF}_x{self.slot}"],
-            self._on_schedule_change,
-        ))
+        # Track time entity changes → reschedule
+        self._unsub.append(
+            async_track_state_change_event(
+                self.hass,
+                [f"time.{SFX_TIME_AUTO_ON}_x{self.slot}",
+                 f"time.{SFX_TIME_AUTO_OFF}_x{self.slot}"],
+                self._on_schedule_change,
+            )
+        )
         self._unsub_midnight = async_track_time_change(
             self.hass, self._on_midnight, hour=23, minute=59, second=59)
         self._sched_on(); self._sched_off()
         await self._read_power()
 
+        # For vacuum preset: also track vacuum entity directly for UI sync
         if self._is_vacuum:
             vac = (self.config.get(CONF_VACUUM_ENTITY) or "").strip()
             if vac and vac != self._trigger_entity:
-                self._unsub.append(async_track_state_change_event(
-                    self.hass, [vac], self._on_trigger_entity))
+                self._unsub.append(
+                    async_track_state_change_event(
+                        self.hass, [vac], self._on_trigger_entity))
+                _LOGGER.info("[%s] Also tracking vacuum entity: %s", self.instance_id, vac)
 
+        # For clima preset: track climate entity for external changes (remote/app)
+        if self._is_clima:
+            clima_eid = self._trigger_entity
+            if clima_eid:
+                _LOGGER.info("[%s] Clima tracking: %s", self.instance_id, clima_eid)
+                # _on_trigger_entity already handles state changes
+
+        # If using trigger entity, evaluate initial state
         if self._use_trigger_entity:
             active = self._trigger_entity_active()
-            if active and not self._ac_state: self._ac_on()
-            elif not active and self._ac_state: self._ac_off()
+            if active and not self._ac_state:
+                self._ac_on()
+            elif not active and self._ac_state:
+                self._ac_off()
 
     def _restore(self) -> None:
         d = self.storage.data
@@ -342,19 +339,19 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._cycle_start_ts  = d.get("cycle_start_ts",  0.0)
         self._acc_total = d.get("kwh_total_accum", 0.0)
         self._e_today   = d.get("energy_today",  0.0); self._e_month = d.get("energy_month", 0.0); self._e_year = d.get("energy_year", 0.0)
-        self._eg_today  = d.get("eg_today", 0.0); self._eg_month = d.get("eg_month", 0.0); self._eg_year = d.get("eg_year", 0.0)
-        self._es_today  = d.get("es_today", 0.0); self._es_month = d.get("es_month", 0.0); self._es_year = d.get("es_year", 0.0)
         self._t_today   = d.get("time_today",    0.0); self._t_month = d.get("time_month",   0.0); self._t_year = d.get("time_year",   0.0)
         self._c_today   = d.get("cycles_today",  0);   self._c_month = d.get("cycles_month", 0);   self._c_year = d.get("cycles_year", 0)
         self._ac_state  = self._cycle_active
 
     async def async_unload(self) -> None:
+        # Unregister from power group
         psensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
         if psensor:
             groups = self.hass.data.get(DOMAIN, {}).get(POWER_GROUPS_KEY, {})
             if psensor in groups:
                 groups[psensor].pop(self.instance_id, None)
-                if not groups[psensor]: del groups[psensor]
+                if not groups[psensor]:
+                    del groups[psensor]
         for u in self._unsub: u()
         self._unsub.clear()
         for attr in ("_unsub_midnight","_unsub_auto_on","_unsub_auto_off"):
@@ -362,14 +359,18 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             if cb: cb(); setattr(self, attr, None)
         for attr in ("_ac_pending_on","_ac_pending_off"):
             cb = getattr(self, attr, None)
-            if cb: cb(); setattr(self, attr, None)
+            if cb:
+                cb()
+                setattr(self, attr, None)
 
     # ── Poll ──────────────────────────────────────────────────────────────────
 
     async def _async_update_data(self) -> dict[str, Any]:
+        self._update_power_share()  # compute share before reading power
         await self._read_power()
         self._integrate()
         self._tick_time()
+        # Re-evaluate AC state on each poll
         if self._use_trigger_entity:
             active = self._trigger_entity_active()
             if active and not self._ac_state: self._ac_on()
@@ -377,173 +378,72 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         else:
             self._eval_ac()
         await self._persist()
-        await self._check_offline_transition()
-        data = self._build()
-        # Reuse the previous object when nothing changed so the coordinator's
-        # listeners don't re-render on every poll (cuts WebSocket spam).
-        if data == self._last_pushed:
-            return self._last_pushed
-        self._last_pushed = data
-        return data
-
-    def _push(self) -> None:
-        """Publish a fresh build to entities, but only when the data actually
-        changed. Re-pushing identical data every tick forces ~50 entities/device
-        to re-render and floods the WebSocket (the '4096 pending messages'
-        warning). Skipping no-op updates drastically cuts that traffic."""
-        data = self._build()
-        if data == self._last_pushed:
-            return
-        self._last_pushed = data
-        self.async_set_updated_data(data)
-
-    async def _check_offline_transition(self) -> None:
-        """Notify when the device goes offline (online→offline) and recovers.
-        Debounced: the device must stay offline for at least 60s before we
-        notify, so brief sensor flickers don't generate spam. Respects the
-        per-device notification switches via the shared notify helper."""
-        now = dt_util.utcnow().timestamp()
-        # Startup grace: during the first 120s after setup, HA is still loading
-        # entities and many briefly report unavailable. Suppress notifications
-        # and just track the current status so we don't spam on every restart.
-        setup_ts = getattr(self, "_setup_ts", None)
-        if setup_ts is not None and (now - setup_ts) < 120:
-            self._last_online_notified = self._sensor_online
-            self._offline_since = None if self._sensor_online else now
-            return
-        online = self._sensor_online
-        if online:
-            # Recovered (or still online)
-            if not self._last_online_notified and self._offline_since is not None:
-                # Was offline and notified → send a recovery note
-                await self._notify_offline(False)
-                self._last_online_notified = True
-            self._offline_since = None
-            return
-        # Currently offline
-        if self._offline_since is None:
-            self._offline_since = now
-        # Debounce: only notify once, after 60s of continuous offline
-        if self._last_online_notified and (now - self._offline_since) >= 60:
-            await self._notify_offline(True)
-            self._last_online_notified = False
-
-    async def _notify_offline(self, is_offline: bool) -> None:
-        try:
-            name = self._display_name
-            if is_offline:
-                msg = f"⚠️ {name} è passato in stato OFFLINE — verificare se corretto"
-                title = f"{name} offline"
-            else:
-                msg = f"✅ {name} è tornato ONLINE"
-                title = f"{name} online"
-            hub = get_hub_config(self.hass)
-            await async_send_notification(
-                self.hass, hub, message=msg, title=title, speak=msg,
-                push=bool(self._notify_push), whatsapp=bool(self._notify_whatsapp),
-                alexa=bool(self._notify_alexa), google=bool(self._notify_google),
-                log_id=self.instance_id)
-        except Exception as ex:  # noqa: BLE001
-            _LOGGER.debug("[%s] offline-notify failed: %s", self.instance_id, ex)
+        return self._build()
 
     # ── Power ─────────────────────────────────────────────────────────────────
 
     async def _read_power(self) -> None:
         psensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
         if not psensor:
-            # No power sensor (climate/vacuum use a trigger entity). Online
-            # status must follow the TRIGGER entity's availability — otherwise a
-            # cloud climate that goes unavailable (e.g. internet down) would
-            # still be reported online.
-            if self._use_trigger_entity:
-                tst = self.hass.states.get(self._trigger_entity)
-                self._sensor_online = bool(
-                    tst is not None and tst.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN, "", None))
-            else:
-                self._sensor_online = False
+            self._sensor_online = False
             return
         st = self.hass.states.get(psensor)
         if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, "", None):
-            self._power_w = 0.0; self._sensor_online = False
-            return
-        try:
-            raw_power = float(st.state)
-            self._sensor_online = True
-            group = self._get_all_coordinators_same_sensor()
-            # Single device: use full power
-            if len(group) <= 1:
-                self._power_w = raw_power
-                return
-            # Master/slave: only the coordinator with the lowest instance_id computes
-            master = sorted(group, key=lambda d: d.instance_id)[0]
-            if self != master:
-                self._power_w = self._shared_power
-                return
-            # Master computes distribution
-            active_devices = [d for d in group if d._is_device_active()]
-            active_count = len(active_devices)
-            if active_count == 0:
-                split = raw_power / len(group)
-                for d in group:
-                    d._shared_power = split
-            else:
-                split = raw_power / active_count
-                for d in group:
-                    d._shared_power = split if d in active_devices else 0.0
-            self._power_w = self._shared_power
-        except Exception as e:
-            _LOGGER.error("[%s] Power read error: %s", self.instance_id, e)
-            self._power_w = 0.0; self._sensor_online = False
-        # Climate devices may have a local power sensor (consumption) AND a cloud
-        # climate entity (state). The power sensor staying online must not mask a
-        # climate entity that went unavailable (e.g. internet down). When this is
-        # a climate device, online status follows the climate entity.
-        if self._use_trigger_entity and (self._trigger_entity or "").startswith("climate."):
-            tst = self.hass.states.get(self._trigger_entity)
-            self._sensor_online = bool(
-                tst is not None and tst.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN, "", None))
+            self._power_w, self._sensor_online = 0.0, False
+        else:
+            try:    self._power_w = float(st.state) * self._power_share; self._sensor_online = True
+            except: self._power_w, self._sensor_online = 0.0, False
 
     @callback
     def _on_power2(self, event) -> None:
+        """Handle state change of second power sensor (pump watts)."""
         new = event.data.get("new_state")
         if new is None or new.state in ("unavailable", "unknown"): return
         try:
             self._power2_w = float(new.state)
-        except ValueError: return
-        self._push()
+        except ValueError:
+            return
+        self.async_set_updated_data(self._build())
 
     @callback
     def _on_power(self, event) -> None:
         new = event.data.get("new_state")
         if new is None or new.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            self._sensor_online = False
+            self._power_w, self._sensor_online = 0.0, False
         else:
-            self._sensor_online = True
-        self._push()
+            try:    self._power_w = float(new.state); self._sensor_online = True
+            except: self._power_w, self._sensor_online = 0.0, False
+        self._integrate()
+        # Only eval threshold if NOT using trigger entity
+        if not self._use_trigger_entity:
+            self._eval_ac()
+        self.async_set_updated_data(self._build())
 
     @callback
     def _on_trigger_entity(self, event) -> None:
+        """Handle state change of external trigger entity."""
         new = event.data.get("new_state")
         if new is None: return
-        # Save last non-off clima mode for restore on next turn_on
-        if self._is_clima and new.state not in ("off", "unavailable", "unknown", ""):
-            self.storage.set("last_clima_mode", new.state)
         active = _entity_is_active(new.state, self._is_vacuum)
+        _LOGGER.debug("[%s] trigger entity %s → %s (active=%s)",
+                      self.instance_id, self._trigger_entity, new.state, active)
         if active and not self._ac_state:
+            # Cancel any pending off, trigger on immediately (no delay for external trigger)
             if self._ac_pending_off: self._ac_pending_off(); self._ac_pending_off = None
             self._ac_on()
         elif not active and self._ac_state:
             if self._ac_pending_on: self._ac_pending_on(); self._ac_pending_on = None
+            # Apply delay_off even for trigger entity (debounce)
             d = self._delay_off_s
             if self._ac_pending_off is None:
                 if d: self._ac_pending_off = async_call_later(self.hass, d, lambda _: self._ac_off())
                 else: self._ac_off()
-        self._push()
+        self.async_set_updated_data(self._build())
 
     # ── Integration ───────────────────────────────────────────────────────────
 
     def _integrate(self) -> None:
-        if not self._has_real_power: return
+        if not self._has_real_power: return  # no real power sensor (vacuum etc.)
         now = dt_util.utcnow().timestamp()
         if self._last_int_ts is None:
             self._last_int_ts, self._last_int_power = now, self._power_w; return
@@ -556,44 +456,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         if delta > 0:
             self._acc_total += delta; self._e_today += delta
             self._e_month   += delta; self._e_year  += delta
-            # FV: split this energy delta into grid-sourced vs solar-sourced
-            grid_frac = self._fv_grid_fraction()
-            if grid_frac is not None:
-                eg = delta * grid_frac
-                es = delta - eg
-                self._eg_today += eg; self._eg_month += eg; self._eg_year += eg
-                self._es_today += es; self._es_month += es; self._es_year += es
         self._last_int_ts = now; self._last_int_power = self._power_w
-
-    def _fv_grid_fraction(self):
-        """Return the fraction (0..1) of the device's current power that comes
-        from the grid, using the hub grid-power sensor. None if FV disabled.
-        Proportional model: grid_share = clamp(grid_power, 0..device_power)."""
-        hub = get_hub_config(self.hass)
-        if not hub.get("fv_enabled"): return None
-        if self.config.get("fv_exclude"): return None
-        gs = hub.get("fv_grid_sensor")
-        if not gs: return None
-        st = self.hass.states.get(gs)
-        if not st or st.state in ("unknown", "unavailable", ""): return None
-        try:
-            grid_w = float(st.state)
-        except (ValueError, TypeError):
-            return None
-        # If the user's grid sensor uses the opposite convention
-        # (+ export / - import), flip the sign so the rest of the math always
-        # sees "+ import / - export".
-        if hub.get("fv_invert"):
-            grid_w = -grid_w
-        thr = hub.get("fv_threshold_w", 0.0)
-        # Device power in W (only meaningful for power-based presets)
-        dev_w = self._power_w if self.config.get(CONF_SOURCE_UNIT, self.preset.source_unit) == "W" else 0.0
-        if dev_w <= 0:
-            # No device power reading → fall back to threshold logic
-            return 1.0 if grid_w > thr else 0.0
-        # Proportional: how much of dev_w is drawn from the grid
-        grid_draw = min(dev_w, max(0.0, grid_w))
-        return max(0.0, min(1.0, grid_draw / dev_w))
 
     def _tick_time(self) -> None:
         if not self._ac_state: return
@@ -626,6 +489,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._ac_pending_on = None
         if self._ac_state: return
         self._ac_state = True
+        # hass.add_job is thread-safe and schedules coroutine in event loop
         self.hass.add_job(self._cycle_start)
 
     @callback
@@ -633,6 +497,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._ac_pending_off = None
         if not self._ac_state: return
         self._ac_state = False
+        # hass.add_job is thread-safe and schedules coroutine in event loop
         self.hass.add_job(self._cycle_end)
 
     # ── Cycle ─────────────────────────────────────────────────────────────────
@@ -646,7 +511,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self.storage.set("cycle_start_ts",  self._cycle_start_ts)
         await self.storage.async_save()
         self.hass.bus.async_fire(EVENT_CYCLE_START, {"instance_id": self.instance_id})
-        self._push()
+        self.async_set_updated_data(self._build())
 
     async def _cycle_end(self) -> None:
         now = dt_util.now(); now_ts = now.timestamp()
@@ -665,10 +530,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self.storage.set("cycle_end_time",         end_str)
         self.storage.set("total_cycles",           self.storage.get("total_cycles",0)+1)
         self._c_today+=1; self._c_month+=1; self._c_year+=1
-        # NOTE: time is already accumulated continuously by _tick_time() while the
-        # device is active, so we must NOT add elapsed_h again here — doing so
-        # double-counted the time (e.g. 1h of use showed as 2h). The per-cycle
-        # duration is still recorded as 'cycle_last_duration' for display only.
+        self._t_today+=elapsed_h; self._t_month+=elapsed_h; self._t_year+=elapsed_h
         await self._persist()
         self.hass.bus.async_fire(EVENT_CYCLE_END, {
             "instance_id": self.instance_id, "duration": duration,
@@ -677,34 +539,80 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         await self._notify(duration, consumption, cost)
         await asyncio.sleep(5)
         self._cycle_start_ts = self._cycle_start_acc = 0.0
-        self._push()
+        self.async_set_updated_data(self._build())
 
     # ── Notifications ─────────────────────────────────────────────────────────
 
     async def _notify(self, duration, consumption, cost):
         hub  = get_hub_config(self.hass)
+        now  = dt_util.now()
         msg  = self._notify_message
         name = self._display_name
         unit = self.config.get(CONF_TOTAL_UNIT, self.preset.total_unit)
+        sh,sm = _parse_time(hub["notify_start_time"])
+        eh,em = _parse_time(hub["notify_end_time"])
+        in_win = (now.replace(hour=sh,minute=sm,second=0,microsecond=0)
+                  <= now <=
+                  now.replace(hour=eh,minute=em,second=0,microsecond=0))
         cost_line = f"💰 {self.preset.label_costo}: {cost} €\n" if self.preset.show_cost else ""
-        # FV split before the total (only for energy presets with FV active)
-        fv_line = ""
-        data = self.data or {}
-        if data.get("fv_enabled") and self.preset.show_cost and unit == "kWh":
-            rete = data.get("costo_rete_oggi", 0.0)
-            sole = data.get("risparmio_sole_oggi", 0.0)
-            fv_line = f"🔌 Rete: {rete} €  ☀️ Sole: {sole} €\n"
-        full_msg = f"📌 {msg}\n⏱ {duration}\n⚡️ {self.preset.label_consumo}: {consumption} {unit}\n{fv_line}{cost_line}".strip()
+        full_msg = f"📌 {msg}\n⏱ {duration}\n⚡️ {self.preset.label_consumo}: {consumption} {unit}\n{cost_line}".strip()
 
-        await async_send_notification(
-            self.hass, hub,
-            message=full_msg, title=name, speak=f"{msg} in {duration}",
-            push=bool(self._notify_push), whatsapp=bool(self._notify_whatsapp),
-            alexa=bool(self._notify_alexa), google=bool(self._notify_google),
-            log_id=self.instance_id)
+        if self._notify_push and hub["push_targets"]:
+            for t in hub["push_targets"]:
+                t = str(t).strip()
+                # In HA 2024+, notify entities exist as "notify.alexs_iphone_14"
+                # but the service may be "notify.mobile_app_alexs_iphone_14"
+                # Use notify.send_message with entity_id — works in all versions
+                sent = False
+                try:
+                    # Modern HA way: notify.send_message with entity_id
+                    if self.hass.services.has_service("notify", "send_message"):
+                        await self.hass.services.async_call(
+                            "notify", "send_message",
+                            {"entity_id": t, "message": full_msg, "title": name})
+                        sent = True
+                except Exception:
+                    pass
+
+                if not sent:
+                    # Fallback: try direct service call with various name formats
+                    svc_name = t.split(".", 1)[1] if "." in t else t
+                    for svc in [svc_name, f"mobile_app_{svc_name}"]:
+                        if self.hass.services.has_service("notify", svc):
+                            try:
+                                await self.hass.services.async_call(
+                                    "notify", svc, {"title": name, "message": full_msg})
+                                sent = True
+                                break
+                            except Exception as ex:
+                                _LOGGER.warning("[%s] push notify.%s: %s",
+                                                self.instance_id, svc, ex)
+
+                if not sent:
+                    _LOGGER.warning(
+                        "[%s] push: impossibile inviare a '%s'. "
+                        "Il selettore entità e il servizio notify potrebbero non coincidere.",
+                        self.instance_id, t)
+
+        if self._notify_whatsapp and hub.get("whatsapp_entity"):
+            try: await self.hass.services.async_call("input_text","set_value",
+                    {"entity_id": hub["whatsapp_entity"], "value": full_msg})
+            except Exception as ex: _LOGGER.warning("[%s] whatsapp: %s", self.instance_id, ex)
+
+        if in_win and self._notify_alexa and hub["alexa_targets"]:
+            try: await self.hass.services.async_call("notify","alexa_media",
+                    {"target": hub["alexa_targets"], "message": f"{msg} in {duration}",
+                     "data": {"type":"announce","method":"spoken"}})
+            except Exception as ex: _LOGGER.warning("[%s] alexa: %s", self.instance_id, ex)
+
+        if in_win and self._notify_google and hub["google_targets"]:
+            try: await self.hass.services.async_call("tts","google_translate_say",
+                    {"entity_id": hub["google_targets"], "message": f"{msg} in {duration}"})
+            except Exception as ex: _LOGGER.warning("[%s] google: %s", self.instance_id, ex)
 
     # ── Midnight ──────────────────────────────────────────────────────────────
 
+    @callback
     @callback
     def _on_midnight(self, now):
         self.hass.add_job(self._midnight, now)
@@ -712,45 +620,26 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
     async def _midnight(self, now):
         today_it = WEEK_DAYS[now.weekday()]
         hub = get_hub_config(self.hass); cpp,_ = self._get_cost(hub)
-        # If a cycle is still running at midnight, the device DID work today even
-        # though the cycle hasn't closed yet. Count it as 1 so "yesterday" never
-        # shows 0 cycles with hours of runtime (which looks inconsistent). The
-        # still-open cycle won't be double-counted: when it finally ends today,
-        # _cycle_end increments today's counter, not yesterday's.
-        cycles_for_yesterday = self._c_today
-        if self._ac_state and (self.data or {}).get("cycle_active") and cycles_for_yesterday == 0:
-            cycles_for_yesterday = 1
         self.storage.set("energy_yesterday", self._e_today)
         self.storage.set("time_yesterday",   self._t_today)
-        self.storage.set("cycles_yesterday", cycles_for_yesterday)
-        self.storage.set_weekly(today_it,"cicli",  str(cycles_for_yesterday))
+        self.storage.set("cycles_yesterday", self._c_today)
+        self.storage.set_weekly(today_it,"cicli",  str(self._c_today))
         self.storage.set_weekly(today_it,"tempo",  _fmt(self._t_today))
         self.storage.set_weekly(today_it,"consumo",round(self._e_today,3))
         self.storage.set_weekly(today_it,"costo",  round(self._e_today*self._cost_factor*cpp,2))
-        self.storage.set("eg_yesterday", self._eg_today)
-        self.storage.set("es_yesterday", self._es_today)
         self._e_today=self._t_today=0.0; self._c_today=0
-        self._eg_today=self._es_today=0.0
         if now.day==1:
-            cyc_m = self._c_month if self._c_month > 0 else (1 if (self._ac_state and (self.data or {}).get("cycle_active")) else 0)
             self.storage.set("energy_last_month",self._e_month)
             self.storage.set("time_last_month",  self._t_month)
-            self.storage.set("cycles_last_month",cyc_m)
-            self.storage.set("eg_last_month", self._eg_month)
-            self.storage.set("es_last_month", self._es_month)
+            self.storage.set("cycles_last_month",self._c_month)
             self._e_month=self._t_month=0.0; self._c_month=0
-            self._eg_month=self._es_month=0.0
         if now.month==1 and now.day==1:
-            cyc_y = self._c_year if self._c_year > 0 else (1 if (self._ac_state and (self.data or {}).get("cycle_active")) else 0)
             self.storage.set("energy_last_year",self._e_year)
             self.storage.set("time_last_year",  self._t_year)
-            self.storage.set("cycles_last_year",cyc_y)
-            self.storage.set("eg_last_year", self._eg_year)
-            self.storage.set("es_last_year", self._es_year)
+            self.storage.set("cycles_last_year",self._c_year)
             self._e_year=self._t_year=0.0; self._c_year=0
-            self._eg_year=self._es_year=0.0
         await self._persist(); await self.storage.async_save()
-        self._push()
+        self.async_set_updated_data(self._build())
 
     # ── Schedule ──────────────────────────────────────────────────────────────
 
@@ -767,6 +656,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         on,_ = self._resolve_schedule()
         if not _enabled(on):
             if self._unsub_auto_on: self._unsub_auto_on(); self._unsub_auto_on=None
+            _LOGGER.debug("[%s] Auto-ON disabled (00:00)", self.instance_id)
             return
         h,m = _parse_time(on)
         if self._unsub_auto_on: self._unsub_auto_on()
@@ -784,6 +674,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         _,off = self._resolve_schedule()
         if not _enabled(off):
             if self._unsub_auto_off: self._unsub_auto_off(); self._unsub_auto_off=None
+            _LOGGER.debug("[%s] Auto-OFF disabled (00:00)", self.instance_id)
             return
         h,m = _parse_time(off)
         if self._unsub_auto_off: self._unsub_auto_off()
@@ -798,52 +689,71 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._unsub_auto_off = async_track_point_in_time(self.hass, _fire, nxt)
 
     async def _sw(self, action: str) -> None:
+        """Execute auto on/off action appropriate for this device type."""
         is_on = (action == "turn_on")
 
+        # 1. Vacuum preset → start / return_to_base
         if self._is_vacuum:
             vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
-            if not vac: return
+            if not vac:
+                _LOGGER.warning("[%s] Vacuum: nessuna vacuum_entity configurata", self.instance_id)
+                return
             svc = "start" if is_on else "return_to_base"
-            try: await self.hass.services.async_call("vacuum", svc, {"entity_id": vac})
-            except Exception as ex: _LOGGER.warning("[%s] vacuum.%s failed: %s", self.instance_id, svc, ex)
+            _LOGGER.info("[%s] Vacuum: %s → %s", self.instance_id, svc, vac)
+            try:
+                await self.hass.services.async_call("vacuum", svc, {"entity_id": vac})
+            except Exception as ex:
+                _LOGGER.warning("[%s] vacuum.%s failed: %s", self.instance_id, svc, ex)
             return
 
+        # 2. Clima preset → set_hvac_mode
         if self._is_clima:
             eid = self._trigger_entity
-            if not eid: return
+            if not eid:
+                _LOGGER.warning("[%s] Clima: nessuna trigger entity configurata", self.instance_id)
+                return
             if is_on:
-                # Read current mode: first try st.state, fallback to stored last mode
+                # Try to restore last non-off mode, default to "heat"
                 st = self.hass.states.get(eid)
-                current = st.state if st else "off"
-                if current not in ("off", "unavailable", "unknown", ""):
-                    mode = current
-                else:
-                    # Restore last known non-off mode from storage
-                    mode = self.storage.get("last_clima_mode", "heat") or "heat"
-                _LOGGER.info("[%s] Clima turn_on: mode=%s (current=%s, stored=%s)",
-                             self.instance_id, mode, current,
-                             self.storage.get("last_clima_mode", ""))
+                last_mode = (st.attributes.get("hvac_mode") if st else None) or "heat"
+                mode = last_mode if last_mode != "off" else "heat"
             else:
                 mode = "off"
             _LOGGER.info("[%s] Clima: set_hvac_mode → %s (%s)", self.instance_id, mode, eid)
-            try: await self.hass.services.async_call(
+            try:
+                await self.hass.services.async_call(
                     "climate", "set_hvac_mode", {"entity_id": eid, "hvac_mode": mode})
-            except Exception as ex: _LOGGER.warning("[%s] climate.set_hvac_mode(%s) failed: %s", self.instance_id, mode, ex)
+            except Exception as ex:
+                _LOGGER.warning("[%s] climate.set_hvac_mode(%s) failed: %s", self.instance_id, mode, ex)
             return
 
+        # 3. Standard: physical switch entity
         sw = (self.config.get(CONF_SWITCH_ENTITY) or "").strip()
         if sw:
-            try: await self.hass.services.async_call("switch", action, {"entity_id": sw})
-            except Exception as ex: _LOGGER.warning("[%s] switch.%s failed: %s", self.instance_id, action, ex)
+            _LOGGER.info("[%s] Switch: %s → %s", self.instance_id, action, sw)
+            try:
+                await self.hass.services.async_call("switch", action, {"entity_id": sw})
+            except Exception as ex:
+                _LOGGER.warning("[%s] switch.%s failed: %s", self.instance_id, action, ex)
             return
 
+        # 4. Generic trigger entity fallback → homeassistant.turn_on/off
         if self._trigger_entity:
-            try: await self.hass.services.async_call("homeassistant", action, {"entity_id": self._trigger_entity})
-            except Exception as ex: _LOGGER.warning("[%s] homeassistant.%s failed: %s", self.instance_id, action, ex)
+            _LOGGER.info("[%s] Trigger: %s → %s", self.instance_id, action, self._trigger_entity)
+            try:
+                await self.hass.services.async_call(
+                    "homeassistant", action, {"entity_id": self._trigger_entity})
+            except Exception as ex:
+                _LOGGER.warning("[%s] homeassistant.%s failed: %s", self.instance_id, action, ex)
+            return
+
+        _LOGGER.warning("[%s] _sw(%s): nessuna entità configurata per il comando", self.instance_id, action)
 
     @callback
     def _on_switch(self, event):
-        self._push()
+        new = event.data.get("new_state")
+        if new: _LOGGER.debug("[%s] switch → %s", self.instance_id, new.state)
+        self.async_set_updated_data(self._build())
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -851,8 +761,6 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         s = self.storage
         s.set("kwh_total_accum",self._acc_total)
         s.set("energy_today",self._e_today); s.set("energy_month",self._e_month); s.set("energy_year",self._e_year)
-        s.set("eg_today",self._eg_today); s.set("eg_month",self._eg_month); s.set("eg_year",self._eg_year)
-        s.set("es_today",self._es_today); s.set("es_month",self._es_month); s.set("es_year",self._es_year)
         s.set("time_today",self._t_today);   s.set("time_month",self._t_month);   s.set("time_year",self._t_year)
         s.set("cycles_today",self._c_today); s.set("cycles_month",self._c_month); s.set("cycles_year",self._c_year)
         await s.async_save()
@@ -863,38 +771,21 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._e_today=self._e_month=self._e_year=0.0
         self._t_today=self._t_month=self._t_year=0.0
         self._c_today=self._c_month=self._c_year=0
-        self._eg_today=self._eg_month=self._eg_year=0.0
-        self._es_today=self._es_month=self._es_year=0.0
         self._acc_total=0.0; self._last_int_ts=None
         self._cycle_active=False; self._cycle_start_acc=self._cycle_start_ts=0.0
         await self.storage.async_reset()
         self.storage.set("reset_date", dt_util.now().strftime("%d/%m/%Y %H:%M"))
         await self.storage.async_save()
-        # Re-read current sensor power so STATO reflects reality right after reset
-        await self._read_power()
-        # If the device is currently active, restart the cycle so STATO shows
-        # "In funzione" immediately (otherwise it'd wait for an OFF→ON edge).
-        if self._is_device_active() or (self._has_real_power and self._power_w > 0):
-            self._cycle_active = True
-            self._cycle_start_ts = dt_util.now().timestamp()
-            self._cycle_start_acc = self._acc_total
-            self.storage.set("cycle_active", True)
-            await self.storage.async_save()
-        self._push()
-
-    async def async_reset_counters(self):
-        """Alias used by the reset_sensors service (same as full reset)."""
-        await self.async_reset_all()
+        self.async_set_updated_data(self._build())
 
     async def async_set_maintenance(self):
         self.storage.set("maintenance_date", dt_util.now().strftime("%d/%m/%Y %H:%M"))
         await self.storage.async_save()
-        self._push()
+        self.async_set_updated_data(self._build())
 
     # ── Data dict ─────────────────────────────────────────────────────────────
 
     def _build(self) -> dict[str, Any]:
-        _hubcfg = get_hub_config(self.hass)
         now=dt_util.now(); now_ts=now.timestamp()
         sd=self.storage.data
         hub=get_hub_config(self.hass)
@@ -902,14 +793,10 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         src_unit=self.config.get(CONF_SOURCE_UNIT,self.preset.source_unit)
         total_unit=self.config.get(CONF_TOTAL_UNIT,self.preset.total_unit)
 
-        if self._cycle_active and self._cycle_start_ts > 0:
-            elapsed_h = max(0.0, (now_ts - self._cycle_start_ts) / 3600.0)
-            # Sanity check: elapsed > 10 years means bad ts → reset
-            if elapsed_h > 87600:
-                elapsed_h = 0.0
-                self._cycle_start_ts = now_ts
-            tempo_ciclo = _fmt(elapsed_h); terminato = "In funzione"
-            consumo_ciclo = max(0.0, round(self._acc_total - self._cycle_start_acc, 3))
+        if self._cycle_active and self._cycle_start_ts>0:
+            elapsed_h=(now_ts-self._cycle_start_ts)/3600.0
+            tempo_ciclo=_fmt(elapsed_h); terminato="In funzione"
+            consumo_ciclo=max(0.0,round(self._acc_total-self._cycle_start_acc,3))
         else:
             tempo_ciclo=sd.get("cycle_last_duration","")
             terminato=sd.get("cycle_end_time","")
@@ -934,14 +821,14 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         if sw_entity:
             st=self.hass.states.get(sw_entity); sw_state=st.state if st else None
 
+        # Trigger entity info for display
         trigger_state=None
         if self._use_trigger_entity:
             st=self.hass.states.get(self._trigger_entity)
             trigger_state=st.state if st else None
 
         return {
-            "power_w":round(self._power_w,1),"sensor_online":self._sensor_online,
-            "has_power_sensor":self._has_real_power,
+            "power_w":self._power_w,"sensor_online":self._sensor_online,
             "acc_total":round(self._acc_total,3),
             "volume_m3":round(self._acc_total/1000.0,4) if self.preset.has_volume_m3 else None,
             "ac_state":self._ac_state,"cycle_active":self._cycle_active,
@@ -967,29 +854,11 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             "costo_ieri":round(sd.get("energy_yesterday",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
             "costo_mese_prec":round(sd.get("energy_last_month",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
             "costo_anno_prec":round(sd.get("energy_last_year",0.0)*cf*cpp,2)  if self.preset.show_cost else 0.0,
-            # FV split: cost from grid + saving from solar self-consumption
-            "fv_enabled": bool(get_hub_config(self.hass).get("fv_enabled")) and not self.config.get("fv_exclude"),
-            "costo_rete_oggi":  round(self._eg_today*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "costo_rete_mese":  round(self._eg_month*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "costo_rete_anno":  round(self._eg_year*cf*cpp,2)  if self.preset.show_cost else 0.0,
-            "costo_rete_ieri":      round(sd.get("eg_yesterday",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "costo_rete_mese_prec": round(sd.get("eg_last_month",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "costo_rete_anno_prec": round(sd.get("eg_last_year",0.0)*cf*cpp,2)  if self.preset.show_cost else 0.0,
-            "risparmio_sole_ieri":      round(sd.get("es_yesterday",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "risparmio_sole_mese_prec": round(sd.get("es_last_month",0.0)*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "risparmio_sole_anno_prec": round(sd.get("es_last_year",0.0)*cf*cpp,2)  if self.preset.show_cost else 0.0,
-            "risparmio_sole_oggi": round(self._es_today*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "risparmio_sole_mese": round(self._es_month*cf*cpp,2) if self.preset.show_cost else 0.0,
-            "risparmio_sole_anno": round(self._es_year*cf*cpp,2)  if self.preset.show_cost else 0.0,
-            "energia_rete_oggi": round(self._eg_today,3),
-            "energia_sole_oggi": round(self._es_today,3),
             "cost_per_unit":cpp,"cost_source":csrc,"cost_factor":cf,
             "preset_id":self.preset_id,"source_unit":src_unit,"total_unit":total_unit,
             "label_consumo":self.preset.label_consumo,"label_costo":self.preset.label_costo,
             "show_cost":self.preset.show_cost,"inverted_cost":self.preset.inverted_cost,
             "schedule_auto_on":on_t,"schedule_auto_off":off_t,
-            "notify_window_start":_hubcfg.get("notify_start_time","08:00:00"),
-            "notify_window_end":_hubcfg.get("notify_end_time","22:00:00"),
             "schedule_source":"time_entity" if (_enabled(t_on_val) or _enabled(t_off_val)) else ("locale" if self.config.get(CONF_SCHEDULE_OVERRIDE) else "hub"),
             "time_auto_on":t_on_val,"time_auto_off":t_off_val,
             "switch_state":sw_state,
@@ -1003,63 +872,105 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             "version":VERSION,"appliance_name":self.config.get(CONF_APPLIANCE_NAME,""),
             "slot":self.slot,"device_icon":self.config.get(CONF_DEVICE_ICON,self.preset.default_icon),
             "weekly":weekly,
-            "main_on":       self._get_main_on(),
-            "image_on":      (self.config.get(CONF_IMAGE_ON)  or "").strip(),
-            "image_off":     (self.config.get(CONF_IMAGE_OFF) or "").strip(),
-            "power2_w":      self._power2_w,
-            "power_sensor_2":(self.config.get(CONF_POWER_SENSOR_2) or "").strip(),
-            "is_vacuum":     self._is_vacuum,
-            "vacuum_battery":self._get_vacuum_battery(),
-            "vacuum_state":  self._get_vacuum_state(),
-            "is_battery":    self._is_battery,
-            "device_battery":self._get_device_battery(),
+            # main_on: the "on" state for UI display (what the switch shows)
+            "main_on": self._get_main_on(),
+            "image_on":       (self.config.get(CONF_IMAGE_ON)  or "").strip(),
+            "power2_w":       self._power2_w,
+            "power_sensor_2": (self.config.get(CONF_POWER_SENSOR_2) or "").strip(),
+            "image_off":      (self.config.get(CONF_IMAGE_OFF) or "").strip(),
+            "is_vacuum":      self._is_vacuum,
+            "vacuum_battery": self._get_vacuum_battery(),
+            "vacuum_state":   self._get_vacuum_state(),
+            "is_battery":     self._is_battery,
+            "device_battery": self._get_device_battery(),
         }
 
     def _register_power_group(self) -> None:
+        """Register this coordinator in the power group for its sensor."""
         psensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
         if not psensor: return
         groups = self.hass.data[DOMAIN].setdefault(POWER_GROUPS_KEY, {})
         if psensor not in groups:
             groups[psensor] = {}
-        groups[psensor][self.instance_id] = False
+        groups[psensor][self.instance_id] = False  # False = not active
         _LOGGER.debug("[%s] Registered in power group: %s (%d members)",
                       self.instance_id, psensor, len(groups[psensor]))
 
     def _update_power_share(self) -> None:
-        """Legacy — kept for compatibility. Logic moved to _read_power."""
-        pass
+        """Compute power share based on how many devices sharing same sensor are active."""
+        psensor = (self.config.get(CONF_POWER_SENSOR) or "").strip()
+        if not psensor:
+            self._power_share = 1.0
+            return
+        groups = self.hass.data[DOMAIN].get(POWER_GROUPS_KEY, {})
+        group = groups.get(psensor, {})
+        if not group or len(group) <= 1:
+            self._power_share = 1.0
+            return
+        # Update this device's active state in group
+        group[self.instance_id] = self._ac_state
+        # Count active members
+        active = [iid for iid, state in group.items() if state]
+        if active:
+            # Divide only among active devices
+            self._power_share = 1.0 / len(active) if self.instance_id in active else 0.0
+        else:
+            # All standby: divide equally (small standby power)
+            self._power_share = 1.0 / len(group)
 
     def _get_main_on(self) -> bool:
+        """
+        What should the main switch show as state?
+        Priority:
+        1. Vacuum: read vacuum entity state (cleaning/returning/paused)
+        2. Clima: read climate hvac_mode != off
+        3. Switch entity: read physical switch state
+        4. Trigger entity: read trigger active state
+        5. Power threshold: read ac_state
+        """
         if self._is_vacuum:
             vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
             if vac:
                 st = self.hass.states.get(vac)
-                if st: return st.state.lower() in VACUUM_ACTIVE_STATES
+                if st:
+                    return st.state.lower() in VACUUM_ACTIVE_STATES
             return self._ac_state
+
         if self._is_clima:
             eid = self._trigger_entity
             if eid:
                 st = self.hass.states.get(eid)
-                if st: return st.state.lower() not in ("off", "unavailable", "unknown")
+                if st:
+                    return st.state.lower() not in ("off", "unavailable", "unknown")
             return self._ac_state
+
         sw = (self.config.get(CONF_SWITCH_ENTITY) or "").strip()
         if sw:
             st = self.hass.states.get(sw)
-            if st: return st.state == "on"
+            if st:
+                return st.state == "on"
             return self._ac_state
+
         if self._use_trigger_entity and self._trigger_entity:
             return self._trigger_entity_active()
+
         return self._ac_state
 
     def _get_vacuum_battery(self) -> int | None:
+        """Return battery % from dedicated battery sensor or vacuum entity attributes."""
         if not self._is_vacuum: return None
+        # 1. Try dedicated battery sensor (preferred)
         bsensor = (self.config.get(CONF_BATTERY_SENSOR) or "").strip()
         if bsensor:
             st = self.hass.states.get(bsensor)
             if st and st.state not in ("unavailable", "unknown", ""):
                 try: return int(float(st.state))
-                except Exception: pass
-        for eid in ((self.config.get(CONF_VACUUM_ENTITY) or "").strip(), self._trigger_entity):
+                except: pass
+        # 2. Try battery_level attribute on vacuum entity (CONF_VACUUM_ENTITY first)
+        for eid in (
+            (self.config.get(CONF_VACUUM_ENTITY) or "").strip(),
+            self._trigger_entity,
+        ):
             if not eid: continue
             st = self.hass.states.get(eid)
             if st:
@@ -1067,23 +978,25 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
                     val = st.attributes.get(attr)
                     if val is not None:
                         try: return int(float(str(val)))
-                        except Exception: pass
+                        except: pass
         return None
 
     def _get_vacuum_state(self) -> str:
+        """Return vacuum entity state."""
         vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
         if not vac: return ""
         st = self.hass.states.get(vac)
         return st.state if st else ""
 
     def _get_device_battery(self) -> int | None:
+        """Return battery % from CONF_BATTERY_SENSOR for batteria preset."""
         if not self._is_battery: return None
         bsensor = (self.config.get(CONF_BATTERY_SENSOR) or "").strip()
         if not bsensor: return None
         st = self.hass.states.get(bsensor)
         if st and st.state not in ("unavailable", "unknown", ""):
             try: return int(float(st.state))
-            except Exception: pass
+            except: pass
         return None
 
     @property
