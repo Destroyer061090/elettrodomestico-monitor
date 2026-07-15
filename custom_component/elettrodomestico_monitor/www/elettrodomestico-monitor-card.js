@@ -1,5 +1,5 @@
 /**
- * Elettrodomestico Monitor Card v5.8.10
+ * Elettrodomestico Monitor Card v6.0.2
  * Card custom nativa — Shadow DOM, nessuna dipendenza da createCardElement
  * Popup via browser_mod
  *
@@ -318,9 +318,17 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
     const batId   = this._eidOf('batteria', `sensor.batteria_vacuum_${s}`);
     const nmId    = `text.nome_elettrodomestico_${s}`;
     const ma      = this._hass.states[mastId]?.attributes || {};
+    // For climate devices read hvac_mode from the wrapper entity (reactive,
+    // updated immediately) instead of ac_state from the coordinator (20s lag).
+    const _climaWrapEid = ma.preset === 'clima'
+      ? this._eidOf('climate', `climate.elettrodomestici_${s}`)
+      : null;
+    const _climaWrapSt  = _climaWrapEid ? this._hass.states[_climaWrapEid] : null;
     const isOn    = _isIrr
       ? (ma.ciclo_attivo === true)
-      : this._s(acId) === 'on';
+      : _climaWrapSt
+        ? (_climaWrapSt.state !== 'off' && _climaWrapSt.state !== 'unavailable' && _climaWrapSt.state !== 'unknown')
+        : this._s(acId) === 'on';
     // Irrigation countdown display
     const cdRow = this._q('#irr-countdown');
     if (cdRow) {
@@ -1206,12 +1214,12 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'elettrodomestico-monitor-card',
   name: 'Elettrodomestico Monitor Card',
-  description: 'v5.8.10 — Shadow DOM nativo, popup browser_mod',
+  description: 'v6.0.2 — Shadow DOM nativo, popup browser_mod',
   preview: true,
 });
 
 console.info(
-  '%c ELETTRODOMESTICO MONITOR %c v5.8.10 ',
+  '%c ELETTRODOMESTICO MONITOR %c v6.0.2 ',
   'background:#12203a;color:#00d4ff;font-weight:bold;padding:2px 8px;border-radius:3px 0 0 3px',
   'background:#00d4ff;color:#12203a;font-weight:bold;padding:2px 8px;border-radius:0 3px 3px 0'
 );

@@ -1,7 +1,7 @@
 {
   "domain": "elettrodomestico_monitor",
   "name": "Elettrodomestico Monitor",
-  "version": "5.8.10",
+  "version": "6.0.2",
   "documentation": "https://github.com/Destroyer061090/elettrodomestico-monitor",
   "issue_tracker": "https://github.com/Destroyer061090/elettrodomestico-monitor/issues",
   "codeowners": [

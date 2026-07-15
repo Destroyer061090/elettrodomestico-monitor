@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    switch.py
-# VERSION: 5.4.0
+# VERSION: 5.8.13
 # DESC:    Switch platform — main device switch, irrigation master/zone/day switches
 # CHANGED: 2026-06-11
 # ============================================================
@@ -25,9 +25,10 @@ import logging
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -189,12 +190,26 @@ async def _async_setup_irrigation_switch(
             if not self._sw_eid: return False
             st = hass.states.get(self._sw_eid)
             return st is not None and st.state == "on"
+        async def async_added_to_hass(self):
+            # Mirror the underlying physical switch reactively. Without this the
+            # proxy's on/off state only refreshed sporadically, so toggling it
+            # (which is the normal, EM-native way to command the zone) showed the
+            # button bouncing back ON/OFF instead of settling immediately.
+            if self._sw_eid:
+                @callback
+                def _mirror(*_):
+                    self.async_write_ha_state()
+                self.async_on_remove(
+                    async_track_state_change_event(
+                        hass, [self._sw_eid], _mirror))
         async def async_turn_on(self, **kw):
             if self._sw_eid:
                 await hass.services.async_call("homeassistant", "turn_on", {"entity_id": self._sw_eid})
+                self.async_write_ha_state()
         async def async_turn_off(self, **kw):
             if self._sw_eid:
                 await hass.services.async_call("homeassistant", "turn_off", {"entity_id": self._sw_eid})
+                self.async_write_ha_state()
 
     # ── Enable/disable scheduling switch ─────────────────────────────────────
     class _SchedEnableSwitch(SwitchEntity):

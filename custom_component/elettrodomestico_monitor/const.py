@@ -1,13 +1,13 @@
 # ============================================================
 # FILE:    const.py
-# VERSION: 5.4.0
+# VERSION: 6.0.0
 # DESC:    Constants — domain, config keys, defaults, vacuum states
 # CHANGED: 2026-06-11
 # ============================================================
 """Constants for Elettrodomestico Monitor v8."""
 
 DOMAIN   = "elettrodomestico_monitor"
-VERSION  = "5.8.10"
+VERSION  = "6.0.2"
 
 GITHUB_USER             = "Destroyer061090"
 GITHUB_REPO             = "elettrodomestico-monitor"
@@ -83,7 +83,7 @@ DEFAULT_NOTIFY_END       = "22:00:00"
 DEFAULT_SCHEDULE         = "00:00:00"
 
 # Storage / runtime
-COORDINATOR_UPDATE_INTERVAL = 10
+COORDINATOR_UPDATE_INTERVAL = 20
 STORAGE_VERSION             = 1
 STORAGE_KEY                 = f"{DOMAIN}_data"
 EVENT_CYCLE_START           = f"{DOMAIN}_cycle_start"
@@ -221,6 +221,7 @@ SFX_DEV_STOP_NUM        = "soglia_stop_carica"
 
 # ── Vacuum-specific config keys ─────────────────────────────────────────────────
 CONF_POWER_SENSOR_2   = "power_sensor_2"    # optional: second power sensor
+CONF_POWER_MULTIPLIER = "power_multiplier"  # 1 = W (default), 1000 = sensor in kW
 CONF_POWER_SHARE      = "power_share"           # fraction of sensor (default 1.0, overridden by auto-share)
 
 # Power group sharing (auto-computed, not user-configured)

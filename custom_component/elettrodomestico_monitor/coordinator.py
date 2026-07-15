@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    coordinator.py
-# VERSION: 5.8.3
+# VERSION: 6.0.2
 # DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
 # CHANGED: 2026-06-11
 # ============================================================
@@ -34,7 +34,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     VACUUM_ACTIVE_STATES, VACUUM_INACTIVE_STATES,
     DOMAIN, VERSION, COORDINATOR_UPDATE_INTERVAL,
-    CONF_POWER_SENSOR, CONF_SWITCH_ENTITY, CONF_TRIGGER_ENTITY,
+    CONF_POWER_SENSOR, CONF_SWITCH_ENTITY, CONF_TRIGGER_ENTITY, CONF_POWER_MULTIPLIER,
     CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR,
     CONF_APPLIANCE_NAME, CONF_SLOT, CONF_PRESET, CONF_DEVICE_ICON,
     CONF_WORK_THRESHOLD_W, CONF_TRIGGER_DELAY_M, CONF_START_DELAY_S,
@@ -468,6 +468,11 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             return
         try:
             raw_power = float(st.state)
+            # Apply optional multiplier (default 1). Use 1000 when the sensor
+            # reports kW instead of W (e.g. wallbox, some inverters).
+            _mult = float(self.config.get(CONF_POWER_MULTIPLIER) or 1.0)
+            if _mult != 1.0:
+                raw_power *= _mult
             self._sensor_online = True
             group = self._get_all_coordinators_same_sensor()
             # Single device: use full power
@@ -633,6 +638,9 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._ac_pending_off = None
         if not self._ac_state: return
         self._ac_state = False
+        # Push immediately so the card reflects OFF at once, without waiting
+        # for _cycle_end (which has a 5s sleep before its own _push).
+        self._push()
         self.hass.add_job(self._cycle_end)
 
     # ── Cycle ─────────────────────────────────────────────────────────────────
@@ -985,6 +993,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             "energia_sole_oggi": round(self._es_today,3),
             "cost_per_unit":cpp,"cost_source":csrc,"cost_factor":cf,
             "preset_id":self.preset_id,"source_unit":src_unit,"total_unit":total_unit,
+            "power_multiplier":float(self.config.get(CONF_POWER_MULTIPLIER) or 1.0),
             "label_consumo":self.preset.label_consumo,"label_costo":self.preset.label_costo,
             "show_cost":self.preset.show_cost,"inverted_cost":self.preset.inverted_cost,
             "schedule_auto_on":on_t,"schedule_auto_off":off_t,

@@ -1,5 +1,5 @@
 /**
- * Elettrodomestico Dispositivo Card v5.8.10
+ * Elettrodomestico Dispositivo Card v6.0.2
  * Card dedicata alla gestione ricarica batterie (preset "dispositivo").
  *
  * Config:
@@ -263,4 +263,4 @@ window.customCards.push({
   name: 'Elettrodomestico — Dispositivo (Batteria)',
   description: 'Card per la gestione ricarica batterie (preset dispositivo).',
 });
-console.info('%c ELETTRODOMESTICO-DISPOSITIVO-CARD %c v5.8.10 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');
+console.info('%c ELETTRODOMESTICO-DISPOSITIVO-CARD %c v6.0.2 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');

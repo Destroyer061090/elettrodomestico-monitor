@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    irrigation_coordinator.py
-# VERSION: 5.8.8
+# VERSION: 5.8.11
 # DESC:    Irrigation coordinator — zone cycling, scheduling, stats, countdown
 # CHANGED: 2026-06-11
 # ============================================================
@@ -456,19 +456,26 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             _LOGGER.info("[IRR %s] Cycle complete: %s, %.1fL, %.3fkWh",
                          self.instance_id, duration_str, l_consumed, kwh_consumed)
 
-    async def stop_cycle(self):
-        """Stop running cycle immediately."""
+    async def stop_cycle(self, external: bool = False):
+        """Stop running cycle immediately.
+
+        external=True means the user already turned the zone switch off by hand,
+        so we don't need to (and shouldn't re-)drive the switches; we just wind
+        the cycle down. external=False is the normal EM-initiated stop."""
         if not self._cycle_active: return
         self._stop_requested = True
-        # Turn off all zone switches
-        for zone in self.zones:
-            sw = zone.get("switch", "")
-            if sw:
-                try:
-                    await self.hass.services.async_call(
-                        "homeassistant", "turn_off", {"entity_id": sw})
-                except Exception: pass
-        _LOGGER.info("[IRR %s] Cycle stopped by user", self.instance_id)
+        if not external:
+            # EM-initiated stop: turn off all zone switches.
+            self._em_off_ts = dt_util.utcnow().timestamp()
+            for zone in self.zones:
+                sw = zone.get("switch", "")
+                if sw:
+                    try:
+                        await self.hass.services.async_call(
+                            "homeassistant", "turn_off", {"entity_id": sw})
+                    except Exception: pass
+        _LOGGER.info("[IRR %s] Cycle stopped (%s)", self.instance_id,
+                     "external" if external else "user")
 
     # ── Countdown ─────────────────────────────────────────────────────────────
 
@@ -525,7 +532,7 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                     self.hass.async_create_task(
                         self.start_cycle(zone_idx=zidx, manual=True))
                     return
-            # External OFF during our cycle → diagnostic log
+            # External OFF during our cycle.
             if (self._cycle_active and old and new
                     and old.state == "on" and new.state == "off"):
                 active_sw = ""
@@ -537,10 +544,17 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                 # false "external OFF" warnings at the very end of a cycle.
                 recently_em = (dt_util.utcnow().timestamp() - self._em_off_ts) < 30.0
                 if eid == active_sw and not self._stop_requested and not recently_em:
-                    _LOGGER.warning(
-                        "[IRR %s] ⚠️ Zona %s spenta da fonte ESTERNA durante il ciclo "
-                        "(non da EM). Controlla automazioni/timer hardware su questo switch.",
+                    # The user turned the active zone OFF by hand. Treat this as a
+                    # stop request: end the cycle cleanly instead of leaving it
+                    # "active" (which made the countdown keep running and the
+                    # switch flip back ON). This is intended user action, so it's
+                    # an info message, not a warning.
+                    _LOGGER.info(
+                        "[IRR %s] Zona %s spenta manualmente durante il ciclo → "
+                        "interpreto come STOP del ciclo.",
                         self.instance_id, eid)
+                    self._stop_requested = True
+                    self.hass.async_create_task(self.stop_cycle(external=True))
         except Exception:
             pass
         self.async_set_updated_data(self._build())
@@ -759,7 +773,10 @@ class IrrigationCoordinator(DataUpdateCoordinator):
         self._kwh_today = self._kwh_month = self._kwh_year = 0.0
         self._t_today   = self._t_month   = self._t_year   = 0.0
         self._c_today   = self._c_month   = self._c_year   = 0
-        self._l_total   = self._kwh_total = 0.0
+        # NOTE: _l_total / _kwh_total are intentionally NOT reset. They feed the
+        # TOTAL_INCREASING sensors used by HA's Energy dashboard, which expects a
+        # monotonic counter — zeroing it would corrupt the long-term graphs and
+        # cost tracking. HA derives per-period figures from the running total.
         self._eg_today  = self._eg_month  = self._eg_year  = 0.0
         self._es_today  = self._es_month  = self._es_year  = 0.0
         self.storage.set("reset_date", dt_util.now().strftime("%d/%m/%Y %H:%M"))

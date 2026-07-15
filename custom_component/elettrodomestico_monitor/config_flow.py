@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    config_flow.py
-# VERSION: 5.8.9
+# VERSION: 6.0.1
 # DESC:    Config flow — setup wizard for all device types including irrigation
 # CHANGED: 2026-06-11
 # ============================================================
@@ -34,7 +34,7 @@ from .const import (
     CONF_SCHEDULE_OVERRIDE, CONF_AUTO_ON_LOCAL, CONF_AUTO_OFF_LOCAL,
     CONF_NOTIFY_PUSH, CONF_NOTIFY_ALEXA, CONF_NOTIFY_GOOGLE, CONF_NOTIFY_WHATSAPP,
     CONF_IMAGE_ON, CONF_IMAGE_OFF,
-    CONF_POWER_SENSOR_2, CONF_POWER_SHARE,
+    CONF_POWER_SENSOR_2, CONF_POWER_SHARE, CONF_POWER_MULTIPLIER,
     CONF_ZONES, CONF_ZONE_ORDER, CONF_FLOW_SENSOR, CONF_PUMP_SENSOR,
     CONF_METEO_ENTITY, CONF_IRR_SCHEDULE_1, CONF_IRR_SCHEDULE_2, CONF_IRR_SCHEDULE_3,
     ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE,
@@ -403,6 +403,7 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_APPLIANCE_NAME):                                      _SEL_TEXT,
                 vol.Optional(CONF_DEVICE_ICON,     default=preset.default_icon):       _SEL_ICON,
                 vol.Optional(CONF_POWER_SENSOR):                                        _SEL_SENSOR,
+                vol.Optional(CONF_POWER_MULTIPLIER, default=1.0):                      _SEL_NUM_FLOAT,
                 vol.Optional(CONF_SWITCH_ENTITY):                                       _SEL_SWITCH,
                 vol.Optional(CONF_TRIGGER_ENTITY):                                      _SEL_ANY_ENTITY,
                 vol.Optional(CONF_SOURCE_UNIT,     default=preset.source_unit):        _SEL_TEXT,
@@ -801,6 +802,7 @@ class ApplianceOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_APPLIANCE_NAME, default=c.get(CONF_APPLIANCE_NAME, "")): _SEL_TEXT,
                 vol.Optional(CONF_DEVICE_ICON,    default=c.get(CONF_DEVICE_ICON, preset.default_icon)): _SEL_ICON,
                 _entity_schema_field(CONF_POWER_SENSOR,   c.get(CONF_POWER_SENSOR)):   _SEL_SENSOR,
+                vol.Optional(CONF_POWER_MULTIPLIER, default=float(c.get(CONF_POWER_MULTIPLIER) or 1.0)): _SEL_NUM_FLOAT,
                 _entity_schema_field(CONF_SWITCH_ENTITY,  c.get(CONF_SWITCH_ENTITY)):  _SEL_SWITCH,
                 _entity_schema_field(CONF_TRIGGER_ENTITY, c.get(CONF_TRIGGER_ENTITY)): _SEL_ANY_ENTITY,
             vol.Optional(CONF_IMAGE_ON,  default=c.get(CONF_IMAGE_ON,  "")): _image_selector_cached(_images),

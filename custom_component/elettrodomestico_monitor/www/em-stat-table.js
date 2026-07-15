@@ -1,5 +1,5 @@
 /**
- * em-stat-table v5.8.10
+ * em-stat-table v6.0.2
  * Tabella statistiche stilata, renderizzata nel proprio shadow DOM
  * (immune alla sanitizzazione HTML della markdown card di HA).
  *
@@ -173,4 +173,4 @@ class EmStatTable extends HTMLElement {
 if (!customElements.get('em-stat-table')) {
   customElements.define('em-stat-table', EmStatTable);
 }
-console.info('%c EM-STAT-TABLE %c v5.8.10 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');
+console.info('%c EM-STAT-TABLE %c v6.0.2 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');
