@@ -1,5 +1,5 @@
 /**
- * Elettrodomestico Dispositivo Card v6.0.4
+ * Elettrodomestico Dispositivo Card v6.2.0
  * Card dedicata alla gestione ricarica batterie (preset "dispositivo").
  *
  * Config:
@@ -46,6 +46,19 @@ const DEV_CSS = `
 `;
 
 class ElettrodomesticoDispositivoCard extends HTMLElement {
+
+  // Vedi lo stesso helper in elettrodomestico-monitor-card.js: qui il
+  // valore interpolato (_bat(), derivato da _slot) è tipicamente numerico,
+  // ma _slot arriva comunque da una config YAML non validata a runtime —
+  // escape difensivo per coerenza con le altre card.
+  static _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -78,7 +91,7 @@ class ElettrodomesticoDispositivoCard extends HTMLElement {
       <style>${DEV_CSS}</style>
       <div class="card">
         <div class="hdr">
-          <span class="title" id="nm">${name}</span>
+          <span class="title" id="nm">${ElettrodomesticoDispositivoCard._esc(name)}</span>
           <span class="actions">
             <ha-icon id="bt-stats" icon="mdi:chart-box-outline"></ha-icon>
             <ha-icon id="bt-set"   icon="mdi:cog"></ha-icon>
@@ -120,7 +133,7 @@ class ElettrodomesticoDispositivoCard extends HTMLElement {
       if (pctEl) pctEl.textContent = '?';
       const statoEl = this._q('#stato');
       if (statoEl) statoEl.innerHTML =
-        `<span class="statebadge battery">Entità non trovata: ${this._bat()}</span>`;
+        `<span class="statebadge battery">Entità non trovata: ${ElettrodomesticoDispositivoCard._esc(this._bat())}</span>`;
       return;
     }
     const pct = parseFloat(st.state) || 0;

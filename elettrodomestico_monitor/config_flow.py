@@ -1,8 +1,11 @@
 # ============================================================
 # FILE:    config_flow.py
-# VERSION: 6.0.1
+# VERSION: 6.1.0
 # DESC:    Config flow — setup wizard for all device types including irrigation
-# CHANGED: 2026-06-11
+# CHANGED: 2026-07-22 (v6.2.1: validazione mancante di flow_sensor nello step
+#          irrigazione + controllo duplicati per entità di controllo — vacuum_
+#          entity/trigger_entity/dev_battery_sensor/dev_charge_switch — già
+#          assegnate a un'altra config entry. Vedi CHANGELOG.md)
 # ============================================================
 """Config flow for Elettrodomestico Monitor v12."""
 from __future__ import annotations
@@ -144,6 +147,34 @@ def _hub_entry(hass):
         if e.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
             return e
     return None
+
+
+def _entity_used_elsewhere(hass, entity_id: str, field: str, exclude_entry_id: str | None = None) -> bool:
+    """True se `entity_id` è già assegnato allo stesso campo `field` di
+    un'ALTRA config entry di questa integrazione.
+
+    Usato per le entità di CONTROLLO (switch_entity, vacuum_entity,
+    trigger_entity, dev_battery_sensor, dev_charge_switch): assegnare la
+    stessa entità a due dispositivi diversi farebbe si che entrambi i
+    coordinator reagiscano allo stesso evento in modo indipendente
+    (doppio conteggio di cicli, doppie notifiche, comandi in conflitto).
+
+    NON va usato per CONF_POWER_SENSOR: la condivisione di un sensore di
+    potenza fisico tra più dispositivi è supportata intenzionalmente
+    (vedi la logica master/slave in coordinator.py).
+
+    `exclude_entry_id` va passato dagli OptionsFlow (modifica di una entry
+    esistente) per non far risultare l'entry corrente in conflitto con
+    se stessa quando non ha cambiato quel campo.
+    """
+    if not entity_id:
+        return False
+    for e in hass.config_entries.async_entries(DOMAIN):
+        if exclude_entry_id and e.entry_id == exclude_entry_id:
+            continue
+        if e.data.get(field) == entity_id:
+            return True
+    return False
 
 
 def _used_slots(hass) -> set[int]:
@@ -340,6 +371,11 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vacuum = _clean_entity(ui.get(CONF_VACUUM_ENTITY))
             if not vacuum or not self.hass.states.get(vacuum):
                 errors[CONF_VACUUM_ENTITY] = "entity_not_found"
+            elif _entity_used_elsewhere(self.hass, vacuum, CONF_TRIGGER_ENTITY):
+                # vacuum_entity viene salvato come trigger_entity (v. sotto):
+                # basta controllare quel campo per coprire entrambi i preset
+                # (vacuum e clima/generico) che usano trigger_entity.
+                errors[CONF_VACUUM_ENTITY] = "entity_in_use"
             else:
                 slot = int(ui.get(CONF_SLOT, 1))
                 if slot in _used_slots(self.hass):
@@ -389,6 +425,8 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
             elif power and not self.hass.states.get(power):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
+            elif trigger and _entity_used_elsewhere(self.hass, trigger, CONF_TRIGGER_ENTITY):
+                errors[CONF_TRIGGER_ENTITY] = "entity_in_use"
             else:
                 if not power:
                     ui = dict(ui); ui[CONF_POWER_SENSOR] = trigger
@@ -444,14 +482,20 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict = {}
         if ui is not None:
             slot = int(ui.get(CONF_SLOT, 1))
+            flow_sensor = _clean_entity(ui.get(CONF_FLOW_SENSOR))
             if slot in _used_slots(self.hass):
                 errors[CONF_SLOT] = "slot_taken"
+            elif not flow_sensor or not self.hass.states.get(flow_sensor):
+                # Prima mancante: a differenza degli step vacuum/device, qui
+                # non si verificava che il sensore di flusso (obbligatorio)
+                # corrispondesse a un'entità realmente esistente.
+                errors[CONF_FLOW_SENSOR] = "entity_not_found"
             else:
                 self._appl.update({
                     CONF_SLOT:           slot,
                     CONF_APPLIANCE_NAME: ui.get(CONF_APPLIANCE_NAME, "Irrigazione"),
                     CONF_DEVICE_ICON:    ui.get(CONF_DEVICE_ICON, "mdi:sprinkler-variant"),
-                    CONF_FLOW_SENSOR:    _clean_entity(ui.get(CONF_FLOW_SENSOR)),
+                    CONF_FLOW_SENSOR:    flow_sensor,
                     CONF_PUMP_SENSOR:    _clean_entity(ui.get(CONF_PUMP_SENSOR)),
                     CONF_METEO_ENTITY:   _clean_entity(ui.get(CONF_METEO_ENTITY)),
                     "_num_zones":        int(ui.get("_num_zones", 1)),
@@ -491,6 +535,10 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_SLOT] = "slot_taken"
             elif not bsens or not self.hass.states.get(bsens):
                 errors[CONF_DEV_BATTERY_SENSOR] = "entity_not_found"
+            elif _entity_used_elsewhere(self.hass, bsens, CONF_DEV_BATTERY_SENSOR):
+                errors[CONF_DEV_BATTERY_SENSOR] = "entity_in_use"
+            elif csw and _entity_used_elsewhere(self.hass, csw, CONF_DEV_CHARGE_SWITCH):
+                errors[CONF_DEV_CHARGE_SWITCH] = "entity_in_use"
             else:
                 data = {
                     CONF_SLOT:           slot,
@@ -735,6 +783,8 @@ class VacuumOptionsFlow(config_entries.OptionsFlow):
             vacuum = _clean_entity(ui.get(CONF_VACUUM_ENTITY))
             if not vacuum or not self.hass.states.get(vacuum):
                 errors[CONF_VACUUM_ENTITY] = "entity_not_found"
+            elif _entity_used_elsewhere(self.hass, vacuum, CONF_TRIGGER_ENTITY, exclude_entry_id=self._entry.entry_id):
+                errors[CONF_VACUUM_ENTITY] = "entity_in_use"
             else:
                 data = _clean_appl_data(dict(ui))
                 data[CONF_TRIGGER_ENTITY] = vacuum
@@ -791,6 +841,8 @@ class ApplianceOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
             elif power and not self.hass.states.get(power):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
+            elif trigger and _entity_used_elsewhere(self.hass, trigger, CONF_TRIGGER_ENTITY, exclude_entry_id=self._entry.entry_id):
+                errors[CONF_TRIGGER_ENTITY] = "entity_in_use"
             else:
                 self._data.update(_clean_appl_data(dict(ui)))
                 return await self.async_step_advanced()

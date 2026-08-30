@@ -94,7 +94,8 @@
     },
     "error": {
       "entity_not_found": "Entità non trovata in Home Assistant.",
-      "slot_taken": "Slot già in uso. Scegli un numero diverso."
+      "slot_taken": "Slot già in uso. Scegli un numero diverso.",
+      "entity_in_use": "Questa entità è già assegnata a un altro dispositivo configurato."
     },
     "abort": {
       "hub_only_selected": "Hub configurato. Aggiungi device tramite 'Aggiungi Integrazione' → Elettrodomestico Monitor."

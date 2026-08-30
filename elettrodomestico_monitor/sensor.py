@@ -1,8 +1,10 @@
 # ============================================================
 # FILE:    sensor.py
-# VERSION: 5.8.10
+# VERSION: 5.8.11
 # DESC:    Sensor platform — all sensors including irrigation sensors
-# CHANGED: 2026-06-11
+# CHANGED: 2026-07-22 (v6.2.1: fix _LitreSensor e _IrrCosto — usavano il
+#          suffisso periodo inglese per la chiave invece di sfx_it italiano,
+#          risultando sempre a 0.0. Vedi CHANGELOG.md)
 # ============================================================
 """Sensor platform for Elettrodomestico Monitor v6.
 
@@ -192,7 +194,10 @@ async def _async_setup_irrigation_sensors(
     class _LitreSensor(_IrrBase):
         def __init__(self, period, sfx_it, lbl):
             super().__init__(f"irrigazione_litri_{sfx_it}")
-            self._key = f"l_{period}"
+            # FIX (audit v6.2.1): era f"l_{period}" (es. "l_month"), chiave mai
+            # presente in irrigation_coordinator.py — che popola "litri_oggi",
+            # "litri_mese", "litri_anno" (italiano). Sensore sempre a 0.0.
+            self._key = f"litri_{sfx_it}"
             self._attr_name = f"{lbl} {name}"
             self._attr_native_unit_of_measurement = "L"
             self._attr_state_class = SensorStateClass.TOTAL
@@ -214,15 +219,22 @@ async def _async_setup_irrigation_sensors(
 
     class _IrrCosto(_IrrBase):
         """Dedicated cost sensor (€) for irrigation — clickable history.
-        kind: acqua | kwh | rete | sole."""
+        kind: acqua | kwh | rete | sole | tot."""
         def __init__(self, kind, period, sfx_it, lbl):
             super().__init__(f"irrigazione_costo_{kind}_{sfx_it}")
+            # FIX (audit v6.2.1): la chiave usava il periodo inglese passato in
+            # ingresso ("today"/"month"/"year", es. "costo_rete_month"), che non
+            # esiste MAI nel dizionario di irrigation_coordinator.py — la',
+            # popolato con suffisso italiano ("costo_rete_mese", ecc). Il
+            # sensore restava quindi sempre a 0.0, mentre la card leggeva
+            # correttamente l'attributo con lo stesso nome italiano — da qui
+            # la discrepanza segnalata (card ok, sensore dedicato a 0).
             self._key = {
-                "acqua": f"costo_acqua_{period}",
-                "kwh":   f"costo_kwh_{period}",
-                "rete":  f"costo_rete_{period}",
-                "sole":  f"risparmio_sole_{period}",
-                "tot":   f"costo_tot_{period}",
+                "acqua": f"costo_acqua_{sfx_it}",
+                "kwh":   f"costo_kwh_{sfx_it}",
+                "rete":  f"costo_rete_{sfx_it}",
+                "sole":  f"risparmio_sole_{sfx_it}",
+                "tot":   f"costo_tot_{sfx_it}",
             }[kind]
             self._attr_name = f"Costo {lbl} {sfx_it} {name}"
             self._attr_native_unit_of_measurement = "€"

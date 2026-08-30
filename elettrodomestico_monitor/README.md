@@ -5,7 +5,7 @@ elettrodomestici, climatizzatori, vacuum robot, impianti di irrigazione
 multi-zona e dispositivi a batteria, con supporto fotovoltaico e notifiche
 multi-canale.
 
-**Versione:** 5.7.0 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
+**Versione:** 6.1.0 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
 
 ---
 

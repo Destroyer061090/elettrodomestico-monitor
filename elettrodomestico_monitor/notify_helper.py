@@ -1,6 +1,8 @@
 # DESC: Centralized multi-channel notification sender, shared by all coordinators.
 #       Eliminates the previously-duplicated push/whatsapp/alexa/google logic.
 # VERSION: 5.7.0
+# CHANGED: 2026-06-11 (data storica ricostruita — campo assente nell'header
+#          originale prima dell'audit v6.1.0)
 """Shared notification helper.
 
 A single async function sends a notification across the enabled channels

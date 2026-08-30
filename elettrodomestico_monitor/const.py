@@ -1,13 +1,14 @@
 # ============================================================
 # FILE:    const.py
-# VERSION: 6.0.0
+# VERSION: 6.1.0
 # DESC:    Constants — domain, config keys, defaults, vacuum states
-# CHANGED: 2026-06-11
+# CHANGED: 2026-07-20 (v6.1.0: allineata VERSION a manifest.json — prima
+#          l'header dichiarava 6.0.0 mentre la costante era 6.0.4)
 # ============================================================
 """Constants for Elettrodomestico Monitor v8."""
 
 DOMAIN   = "elettrodomestico_monitor"
-VERSION  = "6.0.4"
+VERSION  = "6.2.5"
 
 GITHUB_USER             = "Destroyer061090"
 GITHUB_REPO             = "elettrodomestico-monitor"

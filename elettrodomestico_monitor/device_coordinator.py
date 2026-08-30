@@ -1,4 +1,7 @@
-# VERSION: 5.7.0
+# VERSION: 5.7.1
+# CHANGED: 2026-07-23 (v6.2.3: guardia contro soglie avvio/stop invertite o
+#          coincidenti — causavano toggling continuo, confermato con
+#          esecuzione reale. Vedi CHANGELOG.md)
 # DESC: Device (battery charge manager) coordinator — monitors % battery,
 #       auto charge control with hysteresis, cycle + time tracking, notifications.
 
@@ -181,7 +184,20 @@ class DeviceCoordinator(DataUpdateCoordinator):
         # reading, so a slow/desynced switch can't retrigger notifications.
         if self._auto_on() and self._battery_pct is not None:
             start = self._start_pct(); stop = self._stop_pct()
-            if not self._charging and self._battery_pct <= start:
+            # FIX (audit v6.2.3): se le soglie sono invertite o coincidenti
+            # (start >= stop — configurabile sia in config_flow che dai
+            # number entity in dashboard, nessuno dei due valida la coppia),
+            # la logica sotto toggla carica ON/OFF ad ogni singolo update
+            # (confermato con esecuzione reale: 6 cambi su 6 update),
+            # gonfiando il conteggio cicli e spammando notifiche. Se la
+            # configurazione non ha senso, non fare nulla invece di
+            # comportarsi in modo imprevedibile.
+            if start >= stop:
+                _LOGGER.warning(
+                    "[EM Device] '%s': soglia avvio (%.0f%%) >= soglia stop "
+                    "(%.0f%%) — controllo automatico sospeso finché non "
+                    "vengono corrette.", self._device_name(), start, stop)
+            elif not self._charging and self._battery_pct <= start:
                 # Only act on a real transition (was not charging → start)
                 self._charging = True
                 await self._set_charge(True)

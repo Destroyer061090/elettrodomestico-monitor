@@ -1,5 +1,5 @@
 /**
- * Elettrodomestico Monitor Card v6.0.4
+ * Elettrodomestico Monitor Card v6.2.1
  * Card custom nativa — Shadow DOM, nessuna dipendenza da createCardElement
  * Popup via browser_mod
  *
@@ -164,6 +164,19 @@ const CARD_CSS = `
 `;
 
 class ElettrodomesticoMonitorCard extends HTMLElement {
+
+  // Escape minimale prima di interpolare in innerHTML: this._config.name è
+  // testo libero impostato dall'utente nella configurazione della card
+  // (spesso copiata da dashboard condivise online) — senza escape un nome
+  // tipo '<img src=x onerror=...>' eseguirebbe come HTML/JS.
+  static _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -221,7 +234,7 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
     card.className = 'card';
     card.innerHTML = `
       <div class="header" style="display:flex;align-items:center;gap:6px;">
-          <span id="hdr" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this._config.name || 'Elettrodomestico'}</span>
+          <span id="hdr" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ElettrodomesticoMonitorCard._esc(this._config.name || 'Elettrodomestico')}</span>
           <span id="online-dot" style="width:9px;height:9px;border-radius:50%;background:#94a3b8;flex-shrink:0;display:inline-block;margin-right:4px" title=""></span>
         </div>
 
@@ -1014,22 +1027,39 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
     const headers = fvOn
       ? ['Periodo','Cicli','Tempo','L','kWh','€ Acqua','€ Pompa','€ Rete','€ Sole','€ Tot']
       : ['Periodo','Cicli','Tempo','L','kWh','€ Acqua','€ Pompa','€ Tot'];
-    const A = (attr) => ({ entity: mid, attr, raw: true });
+    // A (Tempo): nessun sensore dedicato per-periodo esiste per questa
+    // colonna — prima il click ripiegava silenziosamente su 'mid' (il
+    // sensore aggregato time_on), aprendo un grafico non pertinente
+    // rispetto al valore Oggi/Mese/Anno effettivamente cliccato.
+    const A = (attr) => ({ entity: mid, attr, raw: true, noClick: true });
     const C = (attr, period) => ({ entity: mid, attr, integer: true,
-      clickEntity: period ? `sensor.irrigazione_cicli_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_cicli_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const L = (attr, period) => ({ entity: mid, attr, decimals: 2,
-      clickEntity: period ? `sensor.irrigazione_litri_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_litri_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const K = (attr, period) => ({ entity: mid, attr,
-      clickEntity: period ? `sensor.irrigazione_kwh_${period}_${s}` : undefined });
-    // Cost cells → dedicated cost sensors (clickable history)
+      clickEntity: period ? `sensor.irrigazione_kwh_${period}_${s}` : undefined,
+      noClick: period ? false : true });
+    // Cost cells → dedicated cost sensors (clickable history).
+    // Per le righe 'Periodi Precedenti' (period non passato: Ieri/Mese
+    // Prec./Anno Prec.) NON esiste un sensore dedicato per quello
+    // specifico valore storico — prima il click ripiegava su 'mid',
+    // aprendo il grafico del sensore time_on (durata, non costo): esattamente
+    // il bug segnalato ("apre Time On invece del costo"). Ora disabilitato
+    // esplicitamente invece di mostrare un grafico sbagliato.
     const Ca = (attr, period) => ({ entity: mid, attr, euro: true,
-      clickEntity: period ? `sensor.irrigazione_costo_acqua_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_costo_acqua_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const Ck = (attr, period) => ({ entity: mid, attr, euro: true,
-      clickEntity: period ? `sensor.irrigazione_costo_kwh_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_costo_kwh_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const Cr = (attr, period) => ({ entity: mid, attr, euro: true,
-      clickEntity: period ? `sensor.irrigazione_costo_rete_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_costo_rete_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const Cs = (attr, period) => ({ entity: mid, attr, euro: true,
-      clickEntity: period ? `sensor.irrigazione_costo_sole_${period}_${s}` : undefined });
+      clickEntity: period ? `sensor.irrigazione_costo_sole_${period}_${s}` : undefined,
+      noClick: period ? false : true });
     const Tot = (ca, ck, period) => ({ entity: mid, sum: [ca, ck], euro: true,
       clickEntity: period ? `sensor.irrigazione_costo_tot_${period}_${s}` : undefined,
       noClick: period ? false : true });
@@ -1091,8 +1121,8 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
     const rPrev = (lbl, period, tAttr, costAttr, reteAttr, soleAttr) => ({
       label: lbl,
       cells: _fvOn
-        ? [{text:lbl}, {entity:`sensor.cicli_${period}_elettrodomestici_${s}`,lastPeriod:true,integer:true,clickEntity:`sensor.cicli_${period}_elettrodomestici_${s}`}, {entity:`sensor.tempo_${period}_elettrodomestici_${s}`,lastPeriod:true,raw:true,fallback:'0min'}, {entity:`sensor.energy_${period}_elettrodomestici_${s}`,lastPeriod:true,suffix:` ${unit}`,...consDec}, {entity:mid,attr:reteAttr,euro:true}, {entity:mid,attr:soleAttr,euro:true}, {entity:mid,attr:costAttr,euro:true}]
-        : [{text:lbl}, {entity:`sensor.cicli_${period}_elettrodomestici_${s}`,lastPeriod:true,integer:true,clickEntity:`sensor.cicli_${period}_elettrodomestici_${s}`}, {entity:`sensor.tempo_${period}_elettrodomestici_${s}`,lastPeriod:true,raw:true,fallback:'0min'}, {entity:`sensor.energy_${period}_elettrodomestici_${s}`,lastPeriod:true,suffix:` ${unit}`,...consDec}, {entity:mid,attr:costAttr,euro:true}],
+        ? [{text:lbl}, {entity:`sensor.cicli_${period}_elettrodomestici_${s}`,lastPeriod:true,integer:true,clickEntity:`sensor.cicli_${period}_elettrodomestici_${s}`}, {entity:`sensor.tempo_${period}_elettrodomestici_${s}`,lastPeriod:true,raw:true,fallback:'0min'}, {entity:`sensor.energy_${period}_elettrodomestici_${s}`,lastPeriod:true,suffix:` ${unit}`,...consDec}, {entity:mid,attr:reteAttr,euro:true,noClick:true}, {entity:mid,attr:soleAttr,euro:true,noClick:true}, {entity:mid,attr:costAttr,euro:true,noClick:true}]
+        : [{text:lbl}, {entity:`sensor.cicli_${period}_elettrodomestici_${s}`,lastPeriod:true,integer:true,clickEntity:`sensor.cicli_${period}_elettrodomestici_${s}`}, {entity:`sensor.tempo_${period}_elettrodomestici_${s}`,lastPeriod:true,raw:true,fallback:'0min'}, {entity:`sensor.energy_${period}_elettrodomestici_${s}`,lastPeriod:true,suffix:` ${unit}`,...consDec}, {entity:mid,attr:costAttr,euro:true,noClick:true}],
     });
 
     const rowsNow = [

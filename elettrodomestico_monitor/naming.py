@@ -2,6 +2,8 @@
 #       Prevents the class of bugs caused by ad-hoc string concatenation
 #       (e.g. the historical "xx1" double-prefix bug).
 # VERSION: 5.8.4
+# CHANGED: 2026-06-11 (data storica ricostruita — campo assente nell'header
+#          originale prima dell'audit v6.1.0)
 """Entity naming helpers.
 
 Every entity_id and unique_id in the integration is built here, so the

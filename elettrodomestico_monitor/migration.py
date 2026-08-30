@@ -1,8 +1,9 @@
 # ============================================================
 # FILE:    migration.py
-# VERSION: 5.0.0
+# VERSION: 5.1.0
 # DESC:    Migration — config entry version upgrades
-# CHANGED: 2026-06-11
+# CHANGED: 2026-07-20 (v6.1.0: rimosso blocco duplicato/irraggiungibile dopo il
+#          return della funzione — vedi CHANGELOG.md)
 # ============================================================
 """
 Migration helpers for Elettrodomestico Monitor.
@@ -98,102 +99,56 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         slot    = data.get(CONF_SLOT, "?")
         preset  = data.get(CONF_PRESET, "elettrodomestico")
 
-        # 1. Fill missing keys with defaults
+        # ── 1. Fill missing keys with defaults ─────────────────────────────
         for key, default in _APPLIANCE_DEFAULTS.items():
             if key not in data:
                 data[key] = default
                 changed = True
                 _LOGGER.info(
                     "[EM Migration] '%s' (x%s): added missing key '%s' = %r",
-                    name, slot, key, default)
+                    name, slot, key, default
+                )
 
-        # 2. Detect vacuum misconfiguration
+        # ── 2. Detect vacuum misconfiguration ──────────────────────────────
         trigger = (data.get(CONF_TRIGGER_ENTITY) or "").strip()
-        if trigger.startswith("vacuum.") and preset != "vacuum":
+        if trigger.startswith("vacuum.") and preset != PRESET_VACUUM:
             _LOGGER.warning(
-                "[EM Migration] '%s' (x%s): trigger '%s' is a vacuum "
-                "but preset is '%s'. Consider reconfiguring as 'vacuum' preset.",
-                name, slot, trigger, preset)
+                "[EM Migration] '%s' (x%s): trigger entity '%s' is a vacuum "
+                "but preset is '%s'. Consider reconfiguring as 'vacuum' preset "
+                "for correct start/stop/return_to_base behaviour.",
+                name, slot, trigger, preset
+            )
 
-        # 3. Detect clima misconfiguration
-        if trigger.startswith("climate.") and preset != "clima":
+        # ── 3. Detect clima misconfiguration ────────────────────────────────
+        if trigger.startswith("climate.") and preset != PRESET_CLIMA:
             _LOGGER.warning(
-                "[EM Migration] '%s' (x%s): trigger '%s' is a climate "
-                "but preset is '%s'. Consider reconfiguring as 'clima' preset.",
-                name, slot, trigger, preset)
+                "[EM Migration] '%s' (x%s): trigger entity '%s' is a climate "
+                "but preset is '%s'. Consider reconfiguring as 'clima' preset "
+                "for correct hvac_mode control.",
+                name, slot, trigger, preset
+            )
 
-        # 4. Vacuum: auto-populate vacuum_entity from trigger_entity
-        if preset == "vacuum" and not data.get(CONF_VACUUM_ENTITY):
+        # ── 4. Vacuum: auto-populate vacuum_entity from trigger_entity ─────
+        if preset == PRESET_VACUUM and not data.get(CONF_VACUUM_ENTITY):
             if trigger.startswith("vacuum."):
                 data[CONF_VACUUM_ENTITY] = trigger
                 changed = True
                 _LOGGER.info(
                     "[EM Migration] '%s' (x%s): vacuum_entity auto-set to '%s'",
-                    name, slot, trigger)
+                    name, slot, trigger
+                )
 
-        # 5. Apply changes
+        # ── 5. Apply changes if needed ──────────────────────────────────────
         if changed:
             hass.config_entries.async_update_entry(entry, data=data)
+            _LOGGER.info(
+                "[EM Migration] '%s' (x%s): config updated (non-destructive)",
+                name, slot
+            )
 
         return True
 
     except Exception as ex:
         _LOGGER.error("[EM Migration] Unexpected error for '%s': %s", entry.title, ex)
         return True  # Never block setup due to migration error
-  # Hub has no preset logic
-
-    data    = dict(entry.data)
-    changed = False
-    name    = data.get(CONF_APPLIANCE_NAME, entry.title)
-    slot    = data.get(CONF_SLOT, "?")
-    preset  = data.get(CONF_PRESET, "elettrodomestico")
-
-    # ── 1. Fill missing keys with defaults ─────────────────────────────────────
-    for key, default in _APPLIANCE_DEFAULTS.items():
-        if key not in data:
-            data[key] = default
-            changed = True
-            _LOGGER.info(
-                "[EM Migration] '%s' (x%s): added missing key '%s' = %r",
-                name, slot, key, default
-            )
-
-    # ── 2. Detect vacuum misconfiguration ──────────────────────────────────────
-    trigger = (data.get(CONF_TRIGGER_ENTITY) or "").strip()
-    if trigger.startswith("vacuum.") and preset != PRESET_VACUUM:
-        _LOGGER.warning(
-            "[EM Migration] '%s' (x%s): trigger entity '%s' is a vacuum "
-            "but preset is '%s'. Consider reconfiguring as 'vacuum' preset "
-            "for correct start/stop/return_to_base behaviour.",
-            name, slot, trigger, preset
-        )
-
-    # ── 3. Detect clima misconfiguration ───────────────────────────────────────
-    if trigger.startswith("climate.") and preset != PRESET_CLIMA:
-        _LOGGER.warning(
-            "[EM Migration] '%s' (x%s): trigger entity '%s' is a climate "
-            "but preset is '%s'. Consider reconfiguring as 'clima' preset "
-            "for correct hvac_mode control.",
-            name, slot, trigger, preset
-        )
-
-    # ── 4. Vacuum: auto-populate vacuum_entity from trigger_entity ─────────────
-    if preset == PRESET_VACUUM and not data.get(CONF_VACUUM_ENTITY):
-        if trigger.startswith("vacuum."):
-            data[CONF_VACUUM_ENTITY] = trigger
-            changed = True
-            _LOGGER.info(
-                "[EM Migration] '%s' (x%s): vacuum_entity auto-set to '%s'",
-                name, slot, trigger
-            )
-
-    # ── 5. Apply changes if needed ─────────────────────────────────────────────
-    if changed:
-        hass.config_entries.async_update_entry(entry, data=data)
-        _LOGGER.info(
-            "[EM Migration] '%s' (x%s): config updated (non-destructive)",
-            name, slot
-        )
-
-    return True
 

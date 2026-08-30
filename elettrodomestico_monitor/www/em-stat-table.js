@@ -1,5 +1,5 @@
 /**
- * em-stat-table v6.0.4
+ * em-stat-table v6.2.0
  * Tabella statistiche stilata, renderizzata nel proprio shadow DOM
  * (immune alla sanitizzazione HTML della markdown card di HA).
  *
@@ -18,6 +18,21 @@
  *   - {suffix: ' kWh'} appended
  */
 class EmStatTable extends HTMLElement {
+
+  // Escape minimale prima di interpolare in innerHTML. Necessario perché
+  // titolo, header ed eventuali valori 'raw' (nomi zona, testo libero
+  // configurato dall'utente in config_flow) finiscono altrimenti tali e
+  // quali nel markup — un nome contenente '<img src=x onerror=...>'
+  // eseguirebbe come HTML/JS nel contesto della dashboard.
+  static _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
 
   setConfig(cfg) {
@@ -96,13 +111,13 @@ class EmStatTable extends HTMLElement {
     if (!this._cfg || !this._hass) return;
     const { title, headers = [], rows = [] } = this._cfg;
     const th = headers.map((h, i) =>
-      `<th class="${i === 0 ? 'first' : ''}${i === headers.length - 1 ? ' last' : ''}">${h}</th>`).join('');
+      `<th class="${i === 0 ? 'first' : ''}${i === headers.length - 1 ? ' last' : ''}">${EmStatTable._esc(h)}</th>`).join('');
     const body = rows.map((r, ri) => {
       const cells = r.cells.map((c, i) => {
         const val = i === 0 ? (r.label ?? this._resolve(c)) : this._resolve(c);
         // Mark dynamic cells (everything resolved from state) for in-place updates
         const dyn = (i === 0 && r.label !== undefined) ? '' : ` data-r="${ri}" data-c="${i}"`;
-        return `<td class="${i === 0 ? 'first' : ''}"${dyn}>${val}</td>`;
+        return `<td class="${i === 0 ? 'first' : ''}"${dyn}>${EmStatTable._esc(val)}</td>`;
       }).join('');
       return `<tr>${cells}</tr>`;
     }).join('');
@@ -131,7 +146,7 @@ class EmStatTable extends HTMLElement {
           th, td { padding:6px 7px; font-size:11.5px; }
         }
       </style>
-      ${title ? `<div class="ttl">${title}</div>` : ''}
+      ${title ? `<div class="ttl">${EmStatTable._esc(title)}</div>` : ''}
       <div class="wrap"><table><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
     this._built = true;
     this._wireClicks();
@@ -173,4 +188,4 @@ class EmStatTable extends HTMLElement {
 if (!customElements.get('em-stat-table')) {
   customElements.define('em-stat-table', EmStatTable);
 }
-console.info('%c EM-STAT-TABLE %c v6.0.4 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');
+console.info('%c EM-STAT-TABLE %c v6.2.0 ', 'background:#00d4ff;color:#000;font-weight:700', 'background:#222;color:#fff');

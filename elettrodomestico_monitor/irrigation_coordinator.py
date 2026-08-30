@@ -1,8 +1,10 @@
 # ============================================================
 # FILE:    irrigation_coordinator.py
-# VERSION: 5.8.11
+# VERSION: 5.9.0
 # DESC:    Irrigation coordinator — zone cycling, scheduling, stats, countdown
-# CHANGED: 2026-06-11
+# CHANGED: 2026-08-29 (v6.2.5: fix notifica fine ciclo — Rete/Sole mostravano
+#          il cumulativo di giornata invece della quota del singolo ciclo,
+#          stesso bug già corretto in coordinator.py v6.2.4. Vedi CHANGELOG.md)
 # ============================================================
 """
 Irrigation Coordinator for Elettrodomestico Monitor.
@@ -355,6 +357,12 @@ class IrrigationCoordinator(DataUpdateCoordinator):
         cycle_start = dt_util.now()
         total_l_start = self._l_total
         total_kwh_start = self._kwh_total
+        # FIX (audit v6.2.5): stesso bug e stesso fix già applicati a
+        # coordinator.py — snapshot di energia rete/sole all'inizio del
+        # ciclo, per calcolare la quota DEL SOLO CICLO in _notify_complete()
+        # invece del cumulativo di tutta la giornata. Vedi CHANGELOG.md.
+        eg_start = self._eg_today
+        es_start = self._es_today
 
         try:
             for seq_idx, zone_idx in enumerate(zone_indices):
@@ -437,6 +445,8 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             elapsed_h = (dt_util.now() - cycle_start).total_seconds() / 3600
             l_consumed = round(self._l_total - total_l_start, 2)
             kwh_consumed = round(self._kwh_total - total_kwh_start, 4)
+            eg_cycle = max(0.0, round(self._eg_today - eg_start, 4))
+            es_cycle = max(0.0, round(self._es_today - es_start, 4))
             duration_str = _fmt(elapsed_h)
 
             # Count the cycle and notify ONLY if it ran to completion (not interrupted)
@@ -445,7 +455,7 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                 self._t_today += elapsed_h; self._t_month += elapsed_h; self._t_year += elapsed_h
                 await self._persist()
                 hub = get_hub_config(self.hass)
-                await self._notify_complete(duration_str, l_consumed, kwh_consumed, hub)
+                await self._notify_complete(duration_str, l_consumed, kwh_consumed, hub, eg_cycle, es_cycle)
             else:
                 # Still accumulate elapsed time, but don't count as a completed cycle
                 self._t_today += elapsed_h; self._t_month += elapsed_h; self._t_year += elapsed_h
@@ -691,7 +701,7 @@ class IrrigationCoordinator(DataUpdateCoordinator):
 
     # ── Notifications ─────────────────────────────────────────────────────────
 
-    async def _notify_complete(self, duration, l_consumed, kwh_consumed, hub):
+    async def _notify_complete(self, duration, l_consumed, kwh_consumed, hub, eg_cycle=None, es_cycle=None):
         name = self.config.get(CONF_APPLIANCE_NAME, "Irrigazione")
         # Costs for the message
         cpp_kwh   = float(hub.get("costo_kwh", 0.0))
@@ -704,12 +714,15 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                f"🚿 {l_consumed} L consumati\n"
                f"⚡ {kwh_consumed} kWh pompa\n"
                f"💰 Totale: {costo_tot} €")
-        # FV split if enabled (read from a freshly-built snapshot, not self._d
-        # which doesn't exist on this coordinator)
-        snap = self._build()
-        if hub.get("fv_enabled") and snap.get("costo_rete_oggi") is not None:
-            rete = round(float(snap.get("costo_rete_oggi", 0.0)), 2)
-            sole = round(float(snap.get("risparmio_sole_oggi", 0.0)), 2)
+        # FIX (audit v6.2.5): prima si leggeva "costo_rete_oggi"/
+        # "risparmio_sole_oggi" da uno snapshot fresco (self._build()) — il
+        # cumulativo di TUTTA la giornata, non la quota del SOLO ciclo appena
+        # concluso. Stesso bug e stesso fix già applicati a coordinator.py
+        # (vedi CHANGELOG.md): ora si usa eg_cycle/es_cycle, calcolati come
+        # delta rispetto allo snapshot preso all'inizio di QUESTO ciclo.
+        if hub.get("fv_enabled") and eg_cycle is not None:
+            rete = round(eg_cycle * cpp_kwh, 2)
+            sole = round(es_cycle * cpp_kwh, 2)
             msg += f"\n🔌 Rete: {rete} €  ☀️ Sole: {sole} €"
         speak = f"{name} completata in {duration}"
         await self._push_notify(hub, msg, f"💧 {name}", speak)

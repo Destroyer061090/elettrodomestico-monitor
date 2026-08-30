@@ -1,8 +1,10 @@
 # ============================================================
 # FILE:    coordinator.py
-# VERSION: 6.0.4
+# VERSION: 6.0.7
 # DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
-# CHANGED: 2026-06-11
+# CHANGED: 2026-07-28 (v6.2.4: fix notifica fine ciclo — Rete/Sole mostravano
+#          il cumulativo di giornata invece della quota del singolo ciclo.
+#          Vedi CHANGELOG.md)
 # ============================================================
 """Coordinator for Elettrodomestico Monitor v9.
 
@@ -144,7 +146,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
 
         self._power_w:        float = 0.0
         self._power2_w:       float = 0.0
-        self._shared_power:   float = 0.0   # written by master coordinator
+        self._shared_power:   float = 0.0   # unused since v6.2.2 (see _read_power fix), kept to avoid touching unrelated code
         self._power_share:    float = 1.0   # kept for compatibility
         self._sensor_online:  bool  = True
         # Offline-notification state: last reported online status and a debounce
@@ -158,6 +160,8 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._cycle_active:    bool  = False
         self._cycle_start_acc: float = 0.0
         self._cycle_start_ts:  float = 0.0
+        self._cycle_start_eg:  float = 0.0  # FIX v6.2.4: snapshot grid kWh a inizio ciclo
+        self._cycle_start_es:  float = 0.0  # FIX v6.2.4: snapshot solar kWh a inizio ciclo
         self._acc_total  = 0.0
         self._e_today    = self._e_month = self._e_year = 0.0
         # FV: energy split into grid-sourced and solar-sourced (kWh)
@@ -340,6 +344,8 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._cycle_active    = d.get("cycle_active",    False)
         self._cycle_start_acc = d.get("cycle_start_kwh", 0.0)
         self._cycle_start_ts  = d.get("cycle_start_ts",  0.0)
+        self._cycle_start_eg  = d.get("cycle_start_eg",  0.0)
+        self._cycle_start_es  = d.get("cycle_start_es",  0.0)
         self._acc_total = d.get("kwh_total_accum", 0.0)
         self._e_today   = d.get("energy_today",  0.0); self._e_month = d.get("energy_month", 0.0); self._e_year = d.get("energy_year", 0.0)
         self._eg_today  = d.get("eg_today", 0.0); self._eg_month = d.get("eg_month", 0.0); self._eg_year = d.get("eg_year", 0.0)
@@ -489,23 +495,26 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             if len(group) <= 1:
                 self._power_w = raw_power
                 return
-            # Master/slave: only the coordinator with the lowest instance_id computes
-            master = sorted(group, key=lambda d: d.instance_id)[0]
-            if self != master:
-                self._power_w = self._shared_power
-                return
-            # Master computes distribution
+            # FIX (audit v6.2.2): prima solo il coordinator con l'instance_id
+            # più basso ("master") calcolava la ripartizione ad ogni proprio
+            # update, scrivendo il risultato su `_shared_power` degli altri
+            # ("slave"), che si limitavano a leggerlo. Se il set di
+            # dispositivi attivi cambiava esattamente tra un update del master
+            # e uno slave, quest'ultimo poteva restare fino a un intero
+            # intervallo di polling (COORDINATOR_UPDATE_INTERVAL) indietro —
+            # confermato con esecuzione reale durante l'audit (vedi
+            # CHANGELOG.md). Ora OGNI coordinator ricalcola la propria quota
+            # in modo indipendente, leggendo lo stato "attivo" fresco di
+            # tutto il gruppo al proprio turno — nessuna dipendenza dal
+            # tick di un altro coordinator.
             active_devices = [d for d in group if d._is_device_active()]
             active_count = len(active_devices)
             if active_count == 0:
-                split = raw_power / len(group)
-                for d in group:
-                    d._shared_power = split
+                self._power_w = raw_power / len(group)
+            elif self in active_devices:
+                self._power_w = raw_power / active_count
             else:
-                split = raw_power / active_count
-                for d in group:
-                    d._shared_power = split if d in active_devices else 0.0
-            self._power_w = self._shared_power
+                self._power_w = 0.0
         except Exception as e:
             _LOGGER.error("[%s] Power read error: %s", self.instance_id, e)
             self._power_w = 0.0; self._sensor_online = False
@@ -659,9 +668,18 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._cycle_active    = True
         self._cycle_start_acc = self._acc_total
         self._cycle_start_ts  = dt_util.utcnow().timestamp()
+        # FIX (audit v6.2.4): snapshot di energia rete/sole all'inizio del
+        # ciclo, sullo stesso modello di cycle_start_acc — serve a calcolare
+        # la quota rete/sole DEL SOLO CICLO in _cycle_end(), invece di
+        # mostrare in notifica il cumulativo di tutta la giornata (bug: vedi
+        # CHANGELOG.md).
+        self._cycle_start_eg  = self._eg_today
+        self._cycle_start_es  = self._es_today
         self.storage.set("cycle_active",    True)
         self.storage.set("cycle_start_kwh", self._cycle_start_acc)
         self.storage.set("cycle_start_ts",  self._cycle_start_ts)
+        self.storage.set("cycle_start_eg",  self._cycle_start_eg)
+        self.storage.set("cycle_start_es",  self._cycle_start_es)
         await self.storage.async_save()
         self.hass.bus.async_fire(EVENT_CYCLE_START, {"instance_id": self.instance_id})
         self._push()
@@ -674,6 +692,12 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         hub         = get_hub_config(self.hass)
         cpp, csrc   = self._get_cost(hub)
         cost        = round(consumption * self._cost_factor * cpp, 2)
+        # FIX (audit v6.2.4): quota rete/sole DEL SOLO CICLO (delta rispetto
+        # allo snapshot preso in _cycle_start), non il cumulativo di oggi.
+        eg_cycle    = max(0.0, round(self._eg_today - self._cycle_start_eg, 3))
+        es_cycle    = max(0.0, round(self._es_today - self._cycle_start_es, 3))
+        rete_cost   = round(eg_cycle * self._cost_factor * cpp, 2)
+        sole_cost   = round(es_cycle * self._cost_factor * cpp, 2)
         end_str     = now.strftime("%d/%m/%Y %H:%M")
         self._cycle_active = False
         self.storage.set("cycle_active",           False)
@@ -688,18 +712,31 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         # double-counted the time (e.g. 1h of use showed as 2h). The per-cycle
         # duration is still recorded as 'cycle_last_duration' for display only.
         await self._persist()
+        # FIX (audit v6.2.2): prima questo _push() avveniva solo DOPO
+        # l'asyncio.sleep(5) qui sotto — per quella finestra le entità
+        # mostravano ancora "In funzione" con un timer in scorrimento anche
+        # se il dispositivo era già spento (ac_state=False pubblicato prima
+        # da _ac_off, ma cycle_active ancora True nel data pubblicato).
+        # A questo punto self._cycle_active è già False e i valori finali
+        # (cycle_last_duration/consumption/cost) sono già in storage: il
+        # branch "cycle_active=False" di _build() li legge correttamente,
+        # quindi pubblicare subito è sicuro — verificato che non dipende da
+        # _cycle_start_ts/_cycle_start_acc (azzerati più sotto, dopo il
+        # motivo storico del delay: dare tempo alla notifica di partire
+        # prima del reset dei contatori di inizio ciclo).
+        self._push()
         self.hass.bus.async_fire(EVENT_CYCLE_END, {
             "instance_id": self.instance_id, "duration": duration,
             "consumption": consumption, "cost": cost,
         })
-        await self._notify(duration, consumption, cost)
+        await self._notify(duration, consumption, cost, rete_cost, sole_cost)
         await asyncio.sleep(5)
         self._cycle_start_ts = self._cycle_start_acc = 0.0
         self._push()
 
     # ── Notifications ─────────────────────────────────────────────────────────
 
-    async def _notify(self, duration, consumption, cost):
+    async def _notify(self, duration, consumption, cost, rete_cost=None, sole_cost=None):
         hub  = get_hub_config(self.hass)
         msg  = self._notify_message
         name = self._display_name
@@ -709,8 +746,19 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         fv_line = ""
         data = self.data or {}
         if data.get("fv_enabled") and self.preset.show_cost and unit == "kWh":
-            rete = data.get("costo_rete_oggi", 0.0)
-            sole = data.get("risparmio_sole_oggi", 0.0)
+            # FIX (audit v6.2.4): prima si leggeva "costo_rete_oggi"/
+            # "risparmio_sole_oggi" — il cumulativo di TUTTA la giornata,
+            # non la quota del singolo ciclo appena concluso. Un utente che
+            # fa un caffè alimentato solo da accumulo/batteria (0€ di rete
+            # per QUEL ciclo) vedeva comunque un "Rete: X €" diverso da
+            # zero, perché rifletteva magari un uso precedente della
+            # giornata — mentre "Costo" (cost, sopra) era corretto perché
+            # calcolato per il solo ciclo. I due valori non tornavano mai
+            # a sommare Costo, generando confusione. Ora rete_cost/sole_cost
+            # sono calcolati in _cycle_end() come delta rispetto allo
+            # snapshot preso all'inizio DI QUESTO ciclo.
+            rete = rete_cost if rete_cost is not None else data.get("costo_rete_oggi", 0.0)
+            sole = sole_cost if sole_cost is not None else data.get("risparmio_sole_oggi", 0.0)
             fv_line = f"🔌 Rete: {rete} €  ☀️ Sole: {sole} €\n"
         full_msg = f"📌 {msg}\n⏱ {duration}\n⚡️ {self.preset.label_consumo}: {consumption} {unit}\n{fv_line}{cost_line}".strip()
 
@@ -939,9 +987,22 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         for day in WEEK_DAYS:
             w=sd.get("weekly",{}).get(day,{})
             val=float(w.get("consumo",0.0))
+            # FIX (audit v6.2.3): prima il costo veniva SEMPRE ricalcolato qui
+            # con cpp/cf CORRENTI, scartando il valore storico già salvato in
+            # storage con il prezzo in vigore quel giorno (_midnight scrive
+            # "costo" usando il cpp del momento). Per chi usa un prezzo fisso
+            # questo è invisibile (cpp non cambia), ma per chi usa un sensore
+            # di costo dinamico il costo di "Lunedì" cambiava ogni volta che
+            # il prezzo ATTUALE cambiava — verificato con esecuzione reale.
+            # Ora si usa il valore storico salvato; il ricalcolo resta solo
+            # come fallback per dati salvati prima di questo fix (privi del
+            # campo "costo").
+            costo_storico = w.get("costo")
+            if costo_storico is None:
+                costo_storico = val*cf*cpp
             weekly[day]={"cicli":w.get("cicli","0"),"tempo":w.get("tempo","0min"),
                          "consumo":round(val,3),
-                         "costo":round(val*cf*cpp,2) if self.preset.show_cost else 0.0}
+                         "costo":round(float(costo_storico),2) if self.preset.show_cost else 0.0}
 
         on_t,off_t=self._resolve_schedule()
         t_on_val=self._time_str(SFX_TIME_AUTO_ON)
