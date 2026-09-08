@@ -1,5 +1,5 @@
 /**
- * Elettrodomestico Monitor Card v6.2.1
+ * Elettrodomestico Monitor Card v6.2.7
  * Card custom nativa — Shadow DOM, nessuna dipendenza da createCardElement
  * Popup via browser_mod
  *
@@ -161,6 +161,16 @@ const CARD_CSS = `
   color: var(--primary-text-color, #e2e8f0);
   background: rgba(128,128,128,0.08);
 }
+/* FIX (v6.2.6): lampeggio dei pulsanti Info/Update quando è disponibile un
+   aggiornamento — la notifica push arriva una volta sola e viene persa,
+   questo dà un'indicazione persistente e immediata guardando la card. */
+.nav-btn.has-update {
+  animation: em-blink-update 1.6s ease-in-out infinite;
+}
+@keyframes em-blink-update {
+  0%, 100% { color: var(--secondary-text-color, #94a3b8); }
+  50%      { color: #ffb300; text-shadow: 0 0 6px rgba(255,179,0,0.7); }
+}
 `;
 
 class ElettrodomesticoMonitorCard extends HTMLElement {
@@ -307,6 +317,15 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
   _update() {
     if (!this._ready || !this._hass) return;
     const s = this._slot;
+
+    // FIX (v6.2.6/6.2.7): lampeggio della campanellina Update (🔔) quando è
+    // disponibile un aggiornamento — indicazione persistente sulla card,
+    // a differenza della notifica push che arriva una volta e si dimentica.
+    const _updSt = this._hass.states['sensor.aggiornamento_elettrodomestici_hub'];
+    const _hasUpdate = _updSt?.attributes?.aggiornamento === true;
+    // Solo la campanellina "Update" (🔔) lampeggia — non l'icona "Info" (ℹ️),
+    // su richiesta esplicita dell'utente (v6.2.7).
+    const _bn2 = this._q('#bn2'); if (_bn2) _bn2.classList.toggle('has-update', _hasUpdate);
 
     // ── Detect device type (robust multi-sensor check) ──────────────────
     const irrMastId = `sensor.irrigazione_time_on_${s}`;

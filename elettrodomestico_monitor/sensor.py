@@ -1,7 +1,9 @@
 # ============================================================
 # FILE:    sensor.py
-# VERSION: 5.8.11
+# VERSION: 5.8.12
 # DESC:    Sensor platform — all sensors including irrigation sensors
+# CHANGED: 2026-08-30 (v6.2.6: lo stato del sensore aggiornamento include ora
+#          il tag di versione trovato su GitHub. Vedi CHANGELOG.md)
 # CHANGED: 2026-07-22 (v6.2.1: fix _LitreSensor e _IrrCosto — usavano il
 #          suffisso periodo inglese per la chiave invece di sfx_it italiano,
 #          risultando sempre a 0.0. Vedi CHANGELOG.md)
@@ -1086,7 +1088,14 @@ class _UpdateSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return "Aggiornamento disponibile" if self._ud.get("update_available") else "Aggiornato"
+        # FIX (v6.2.6): prima mostrava sempre il testo fisso "Aggiornamento
+        # disponibile", senza indicare QUALE versione — richiesto dall'utente
+        # dopo aver visto la stessa dicitura generica nel popup Info della
+        # card. Ora include il tag trovato su GitHub (versione_disponibile).
+        if self._ud.get("update_available"):
+            latest = self._ud.get("latest_version", "")
+            return f"Aggiornamento disponibile v{latest}" if latest else "Aggiornamento disponibile"
+        return "Aggiornato"
 
     @property
     def extra_state_attributes(self):

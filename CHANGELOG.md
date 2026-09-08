@@ -5,6 +5,49 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [6.2.7] - 2026-09-07
+
+### Changed — su richiesta dell'utente, correzione a v6.2.6
+- **`www/elettrodomestico-monitor-card.js`**: il lampeggio introdotto in
+  v6.2.6 applicava la classe `has-update` a ENTRAMBI i pulsanti Update
+  (🔔) e Info (ℹ️). L'utente ha chiarito di volerlo solo sulla
+  campanellina Update — rimosso da Info.
+
+### Fixed
+-
+
+## [6.2.6] - 2026-09-07
+
+### Added
+- **`tests/test_update_sensor.py`**: verifica che lo stato del sensore
+  aggiornamento includa il tag di versione trovato su GitHub, invece del
+  testo generico precedente.
+- Nuova animazione `has-update` in `elettrodomestico-monitor-card.js`:
+  i pulsanti "Update" (🔔) e "Info" (ℹ️) lampeggiano quando è disponibile
+  un aggiornamento, come indicazione persistente sulla card (la notifica
+  push arriva una volta sola e si dimentica facilmente).
+
+### Changed — richiesta utente: versione visibile + indicazione persistente
+- **`sensor.py` — `_UpdateSensor.native_value`**: prima mostrava sempre
+  il testo fisso "Aggiornamento disponibile", senza indicare quale
+  versione — l'informazione (`versione_disponibile`) era già letta da
+  GitHub e disponibile come attributo, semplicemente non veniva mai
+  inclusa nello STATO del sensore (quello che il popup Info della card
+  mostra). Ora lo stato è "Aggiornamento disponibile v6.2.6" (o il tag
+  trovato), con fallback difensivo al testo generico se il tag non fosse
+  ancora disponibile.
+- **`www/elettrodomestico-monitor-card.js`**: aggiunta la classe
+  `has-update` (animazione di lampeggio arancione) applicata/rimossa sui
+  pulsanti Update e Info ad ogni refresh della card, leggendo l'attributo
+  booleano `aggiornamento` del sensore hub. Ho scelto di far lampeggiare
+  ENTRAMBI i pulsanti (non solo "Info" come richiesto letteralmente)
+  perché "Update" (🔔) è il pulsante già dedicato proprio a questo scopo
+  — se non era abbastanza visibile da solo, probabilmente serviva lo
+  stesso trattamento su entrambi.
+
+### Fixed
+-
+
 ## [6.2.5] - 2026-08-30
 
 ### Added
