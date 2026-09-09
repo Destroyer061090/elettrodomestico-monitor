@@ -5,7 +5,7 @@ elettrodomestici, climatizzatori, vacuum robot, impianti di irrigazione
 multi-zona e dispositivi a batteria, con supporto fotovoltaico e notifiche
 multi-canale.
 
-**Versione:** 6.1.0 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
+**Versione:** 6.2.7 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
 
 ---
 
@@ -25,16 +25,25 @@ sistema unificato che misura, contabilizza e visualizza:
 
 ## Installazione
 
-1. Copia la cartella `elettrodomestico_monitor` in `/config/custom_components/`
-2. Riavvia Home Assistant
-3. Vai in **Impostazioni > Integrazioni > Aggiungi** e cerca "Elettrodomestico Monitor"
-4. Configura l'Hub Globale (tariffe EUR/kWh ed EUR/m3, sensore fotovoltaico, notifiche, orari)
-5. Aggiungi i device uno alla volta, oppure usa l'**Import** di una configurazione esistente
+### Tramite HACS (consigliato)
 
-> **Dashboard in modalita YAML:** la registrazione automatica delle risorse
-> Lovelace non e supportata da Home Assistant in questa modalita. Aggiungi
-> manualmente le tre risorse JavaScript indicate nel log (e normale, non e un errore).
+1. Apri HACS in Home Assistant
+2. Cerca "Elettrodomestico Monitor" (se già in HACS default) oppure aggiungi
+   questo repository come custom repository:
+   `https://github.com/Destroyer061090/elettrodomestico-monitor` (categoria: Integration)
+3. Installa, poi riavvia Home Assistant
+4. Vai in **Impostazioni > Integrazioni > Aggiungi** e cerca "Elettrodomestico Monitor"
+5. Configura l'Hub Globale (tariffe EUR/kWh ed EUR/m3, sensore fotovoltaico, notifiche, orari)
+6. Aggiungi i device uno alla volta, oppure usa l'**Import** di una configurazione esistente
 
+### Installazione manuale
+
+1. Copia la cartella `custom_components/elettrodomestico_monitor` in `/config/custom_components/`
+2. Segui i passi 2-6 del metodo HACS sopra
+
+> **Dashboard in modalità YAML:** la registrazione automatica delle risorse
+> Lovelace non è supportata da Home Assistant in questa modalità. Aggiungi
+> manualmente le tre risorse JavaScript indicate nel log (è normale, non è un errore).
 ---
 
 ## Architettura in breve
