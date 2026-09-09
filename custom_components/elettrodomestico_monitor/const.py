@@ -8,7 +8,7 @@
 """Constants for Elettrodomestico Monitor v8."""
 
 DOMAIN   = "elettrodomestico_monitor"
-VERSION  = "6.2.8"
+VERSION  = "6.2.9"
 
 GITHUB_USER             = "Destroyer061090"
 GITHUB_REPO             = "elettrodomestico-monitor"

@@ -1,7 +1,9 @@
 # ============================================================
 # FILE:    sensor.py
-# VERSION: 5.8.12
+# VERSION: 5.8.13
 # DESC:    Sensor platform — all sensors including irrigation sensors
+# CHANGED: 2026-09-09 (v6.2.9: fix lint — variabili 'icon'/'day_en' non usate,
+#          zip() semplificato. Vedi CHANGELOG.md)
 # CHANGED: 2026-08-30 (v6.2.6: lo stato del sensore aggiornamento include ora
 #          il tag di versione trovato su GitHub. Vedi CHANGELOG.md)
 # CHANGED: 2026-07-22 (v6.2.1: fix _LitreSensor e _IrrCosto — usavano il
@@ -29,7 +31,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .naming import unique_id, entity_suffix, slot_token, build_eids
 from .const import (
     DOMAIN, CONF_APPLIANCE_NAME, CONF_INSTANCE_ID, CONF_SLOT, CONF_PRESET,
-    WEEK_DAYS, WEEK_DAYS_EN,
+    WEEK_DAYS,
     SFX_POWER, SFX_KWH, SFX_VOLUME_M3, SFX_MASTER, SFX_STATUS, SFX_VERSION,
     SFX_ENERGY_TODAY, SFX_ENERGY_MONTH, SFX_ENERGY_YEAR,
     SFX_CICLI_TODAY, SFX_CICLI_MONTH, SFX_CICLI_YEAR, SFX_CICLI_TOTAL,
@@ -147,7 +149,7 @@ async def async_setup_entry(
         entities.append(_VolumeM3(coord, entry, name, slot, preset))
 
     # 7 weekly sensors
-    for day_it, day_en in zip(WEEK_DAYS, WEEK_DAYS_EN):
+    for day_it in WEEK_DAYS:
         entities.append(_WeekDay(coord, entry, name, slot, day_it, preset))
 
     async_add_entities(entities)
@@ -481,7 +483,6 @@ async def _async_setup_device_sensors(hass, entry, coord, async_add_entities):
 
 
 def _device_dev(entry, name):
-    icon = entry.data.get("device_icon", "mdi:battery-charging")
     return DeviceInfo(
         identifiers={(DOMAIN, entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1"))))},
         name=name,
@@ -552,7 +553,6 @@ def _uid(iid, sfx, slot): return unique_id(iid, sfx, slot)
 def _eid(sfx, slot):      return entity_suffix(sfx, slot)
 
 def _device(entry, name):
-    icon = entry.data.get("device_icon", "mdi:washing-machine")
     return DeviceInfo(
         identifiers={(DOMAIN, entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1"))))},
         name=name,

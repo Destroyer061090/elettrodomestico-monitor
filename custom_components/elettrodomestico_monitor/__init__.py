@@ -1,10 +1,10 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.7.24
+# VERSION: 5.7.25
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
-# CHANGED: 2026-09-09 (v6.2.8: rimossa la registrazione manuale del path
-#          /brands/{DOMAIN} — obsoleta da HA 2026.3+, sostituita dalla nuova
-#          cartella brand/ nativa. Vedi CHANGELOG.md)
+# CHANGED: 2026-09-09 (v6.2.9: aggiunto CONFIG_SCHEMA — richiesto da hassfest
+#          per integrazioni che implementano async_setup; fix lint 'ex' non
+#          usata. Vedi CHANGELOG.md)
 # ============================================================
 """Elettrodomestico Monitor v18."""
 from __future__ import annotations
@@ -16,6 +16,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN, ENTRY_TYPE_HUB, ENTRY_TYPE_APPLIANCE, CONF_ENTRY_TYPE, CONF_INSTANCE_ID, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE
@@ -27,6 +28,11 @@ from .services import async_register_services, async_unregister_services
 from .migration import async_migrate_entry as _migrate
 
 _LOGGER = logging.getLogger(__name__)
+
+# Questa integrazione si configura SOLO tramite config entry (config_flow),
+# mai da configuration.yaml — richiesto da hassfest per ogni integrazione
+# che implementa async_setup/setup (warning CONFIG_SCHEMA).
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON,
@@ -70,7 +76,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     try:
         await hass.http.async_register_static_paths(to_register)
         _LOGGER.debug("Static paths registered for %s", DOMAIN)
-    except Exception as ex:
+    except Exception:
         # Some paths may already be registered — try one by one
         for p in to_register:
             try:

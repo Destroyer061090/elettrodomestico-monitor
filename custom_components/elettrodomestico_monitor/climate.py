@@ -1,8 +1,9 @@
 # ============================================================
 # FILE:    climate.py
-# VERSION: 5.7.7
+# VERSION: 5.7.8
 # DESC:    Climate platform — wrapper entity for clima preset devices
-# CHANGED: 2026-06-11
+# CHANGED: 2026-09-09 (v6.2.9: fix lint — rimossa la definizione duplicata di
+#          current_temperature. Vedi CHANGELOG.md)
 # ============================================================
 """Climate platform for Elettrodomestico Monitor v26.
 
@@ -310,11 +311,6 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     def target_humidity(self) -> float | None:
         st = self._real_state()
         return st.attributes.get("humidity") if st else None
-
-    @property
-    def current_temperature(self) -> float | None:
-        st = self._real_state()
-        return st.attributes.get("current_temperature") if st else None
 
     @property
     def target_temperature_high(self) -> float | None:

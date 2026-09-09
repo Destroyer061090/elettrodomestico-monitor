@@ -5,6 +5,58 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [6.2.9] - 2026-09-09
+
+### Added
+- **`LICENSE`** (MIT) — mancava del tutto, richiesta obbligatoria da HACS
+  per la validazione ("The repository has no license"). MIT scelta come
+  default ragionevole per un'integrazione custom HA: è una decisione
+  legale dell'autore, da confermare o cambiare liberamente.
+- **`CONFIG_SCHEMA`** in `__init__.py` — richiesto da hassfest (warning)
+  per ogni integrazione che implementa `async_setup`/`setup`; usa
+  `cv.config_entry_only_config_schema(DOMAIN)` dato che l'integrazione
+  si configura solo tramite config entry, mai da YAML.
+
+### Fixed — Hassfest (dalla prima esecuzione reale della CI)
+- **`manifest.json`**: due componenti usati nel codice
+  (`hass.http.async_register_static_paths` e
+  `homeassistant.components.lovelace.resources`) non erano dichiarati.
+  Aggiunto `"http"` in `dependencies` (dipendenza vera: serve sempre per
+  registrare i path statici) e `"lovelace"` in `after_dependencies`
+  (uso opzionale, già gestito con try/except quando la dashboard è in
+  modalità YAML).
+
+### Fixed — HACS
+- **`hacs.json`** e **`README.md`** alla radice (mancavano — vedi
+  v6.2.8); risolto anche il fallimento per licenza mancante (vedi sopra).
+
+### Fixed — Lint (ruff), 6 errori dalla prima esecuzione reale
+- **`__init__.py`**: variabile `ex` assegnata e mai usata in un blocco
+  `except` (F841) — rimossa.
+- **`climate.py`**: la proprietà `current_temperature` era definita
+  DUE volte nella stessa classe, identiche (F811) — probabile copia-incolla
+  vicino alle proprietà di umidità aggiunte in seguito. Rimossa la
+  duplicata; nessun cambio di comportamento (Python usava già solo
+  l'ultima definizione).
+- **`sensor.py`**: loop `for day_it, day_en in zip(WEEK_DAYS, WEEK_DAYS_EN)`
+  con `day_en` mai usato nel corpo (B007) e `zip()` senza `strict=`
+  (B905). `WEEK_DAYS_EN` non serviva a nient'altro nel file — semplificato
+  in un semplice `for day_it in WEEK_DAYS`, rimosso anche l'import ora
+  inutilizzato.
+- **`sensor.py`**: due funzioni helper (`_device`, `_device_dev`)
+  calcolavano una variabile `icon` da `device_icon` ma non la passavano
+  mai a `DeviceInfo(...)` (che non ha comunque un parametro icona) —
+  variabili morte (F841) in entrambe, rimosse.
+
+### Non affrontato in questa release
+- **"Test (pytest)"**: il log di questo job non è stato condiviso in
+  questo giro (solo Hassfest, HACS e Lint) — il suo esito resta da
+  verificare. Prossimo passo naturale: rilanciare la pipeline e, se
+  fallisce ancora, condividere anche quel log.
+
+### Fixed
+-
+
 ## [6.2.8] - 2026-09-09
 
 ### Added
