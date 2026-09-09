@@ -1,0 +1,217 @@
+{
+  "config": {
+    "step": {
+      "hub_costs": {
+        "title": "Global Hub — Resource Costs",
+        "data": {
+          "costo_kwh": "⚡ Electricity cost (€/kWh) — fixed value",
+          "costo_kwh_sensor": "⚡ Dynamic €/kWh sensor (overrides the fixed value if set)",
+          "costo_acqua_m3": "💧 Water cost (€/m³) — fixed value",
+          "costo_acqua_m3_sensor": "💧 Dynamic €/m³ sensor (overrides the fixed value if set)",
+          "costo_gas_m3": "🔥 Gas cost (€/m³) — fixed value",
+          "costo_gas_m3_sensor": "🔥 Dynamic €/m³ sensor (overrides the fixed value if set)",
+          "vendita_kwh": "☀️ Solar sale price (€/kWh) — fixed value",
+          "vendita_kwh_sensor": "☀️ Dynamic €/kWh sale sensor (overrides the fixed value)",
+          "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
+          "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
+        },
+        "description": "For each resource: enter a fixed value OR select a dynamic sensor (e.g. from your provider). The sensor takes priority over the fixed value."
+      },
+      "hub_notifications": {
+        "title": "Global Hub — Notifications",
+        "data": {
+          "notify_start_time": "Notification window start",
+          "notify_end_time": "Notification window end",
+          "push_targets": "Push targets (notify services)",
+          "alexa_targets": "Alexa targets (media_player)",
+          "google_targets": "Google TTS targets (media_player)",
+          "whatsapp_entity": "input_text entity for WhatsApp"
+        }
+      },
+      "hub_schedule": {
+        "title": "Global Hub — Automatic Schedules",
+        "data": {
+          "auto_on_time": "Global automatic on (00:00 = disabled)",
+          "auto_off_time": "Global automatic off (00:00 = disabled)"
+        }
+      },
+      "preset_select": {
+        "title": "Device Type",
+        "data": {
+          "preset": "Device type"
+        }
+      },
+      "vacuum": {
+        "title": "Configure Vacuum / Robot",
+        "data": {
+          "slot": "Numeric slot (e.g. 201 for vacuum)",
+          "appliance_name": "Device name",
+          "device_icon": "Icon",
+          "vacuum_entity": "Vacuum entity (required — e.g. vacuum.roomba)",
+          "battery_sensor": "Battery % sensor (optional — e.g. sensor.roomba_battery)",
+          "trigger_delay_m": "Cycle-end detection delay (minutes)",
+          "custom_message": "End-of-cleaning notification message",
+          "notify_push": "Enable Push notification",
+          "notify_alexa": "Enable Alexa notification",
+          "notify_google": "Enable Google TTS notification",
+          "notify_whatsapp": "Enable WhatsApp notification",
+          "image_on": "Vacuum running image (.gif)",
+          "image_off": "Vacuum standby image"
+        }
+      },
+      "appliance": {
+        "title": "Configure Appliance",
+        "data": {
+          "slot": "Numeric slot (e.g. 1 → _x1, 200 → _x200)",
+          "appliance_name": "Device name",
+          "device_icon": "Icon",
+          "power_sensor": "Power/flow sensor (optional if a trigger entity is set)",
+          "switch_entity": "Physical switch to control (optional)",
+          "trigger_entity": "External trigger entity (optional — climate.*, binary_sensor.*, switch.*)",
+          "source_unit": "Source unit (W, L/min, m³/h)",
+          "total_unit": "Total unit (kWh, L, m³)",
+          "work_threshold_w": "Cycle detection threshold (source value)",
+          "trigger_delay_m": "Cycle-end delay (minutes)",
+          "start_delay_s": "Cycle-start delay (seconds)",
+          "custom_message": "End-of-cycle notification message",
+          "notify_push": "Enable Push notification",
+          "notify_alexa": "Enable Alexa notification",
+          "notify_google": "Enable Google TTS notification",
+          "notify_whatsapp": "Enable WhatsApp notification",
+          "battery_sensor": "Battery % sensor (optional — for battery-powered devices)",
+          "image_on": "ON state image (e.g. /local/foto-pkg/washer_on.gif)",
+          "image_off": "OFF state image (e.g. /local/foto-pkg/washer_off.png)",
+          "power_sensor_2": "Pump power sensor (optional — e.g. sensor.pump_W for dual kWh tracking)",
+          "power_share": "Sensor share (1.0 = 100% | 0.25 = 25% if shared across 4 devices)"
+        }
+      },
+      "appliance_advanced": {
+        "title": "Automatic Schedule for this Device",
+        "data": {
+          "schedule_override": "Use custom schedule (ignore Hub)",
+          "auto_on_local": "Local automatic on (00:00 = disabled)",
+          "auto_off_local": "Local automatic off (00:00 = disabled)"
+        }
+      },
+      "irrigation": {
+        "title": "Configure Irrigation System",
+        "description": "Set the flow sensor, pump and number of zones.",
+        "data": {
+          "slot": "Slot (xN)",
+          "appliance_name": "System Name",
+          "device_icon": "Icon",
+          "flow_sensor": "Flow Sensor (L/min)",
+          "pump_sensor": "Pump Power Sensor (W)",
+          "meteo_entity": "Weather Sensor (skip if raining)",
+          "_num_zones": "Number of Zones"
+        }
+      },
+      "irrigation_zone": {
+        "title": "Configure Zones",
+        "description": "Set the switch and duration for each zone.",
+        "data": {}
+      },
+      "irrigation_schedule": {
+        "title": "Schedule Settings",
+        "description": "Set up to 3 automatic start times. Active days are configured via switches after setup.",
+        "data": {
+          "s1_time": "Schedule 1",
+          "s2_time": "Schedule 2",
+          "s3_time": "Schedule 3"
+        }
+      },
+      "device": {
+        "title": "Configure Device (Battery Charge)",
+        "data": {
+          "slot": "Numeric slot (e.g. 301)",
+          "appliance_name": "Device name",
+          "device_icon": "Icon",
+          "dev_battery_sensor": "🔋 Battery % sensor (required)",
+          "dev_charge_switch": "🔌 Charging plug switch (optional)",
+          "dev_start_pct": "Start charge % (below → charge)",
+          "dev_stop_pct": "Stop charge % (above → stop)",
+          "notify_push": "Push notification",
+          "notify_alexa": "Alexa notification",
+          "notify_google": "Google TTS notification",
+          "notify_whatsapp": "WhatsApp notification"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entity not found in Home Assistant.",
+      "slot_taken": "Slot already in use. Choose a different number.",
+      "entity_in_use": "This entity is already assigned to another configured device."
+    },
+    "abort": {
+      "hub_only_selected": "Hub configured. Add devices via 'Add Integration' → Elettrodomestico Monitor."
+    }
+  },
+  "options": {
+    "step": {
+      "hub_costs": {
+        "title": "Hub — Costs & Photovoltaic",
+        "data": {
+          "costo_kwh": "⚡ ELECTRICITY — Cost €/kWh (fixed value)",
+          "costo_kwh_sensor": "⚡ ELECTRICITY — or dynamic sensor €/kWh (takes priority)",
+          "costo_acqua_m3": "💧 WATER — Cost €/m³ (fixed value)",
+          "costo_acqua_m3_sensor": "💧 WATER — or dynamic sensor €/m³ (takes priority)",
+          "costo_gas_m3": "🔥 GAS — Cost €/m³ (fixed value)",
+          "costo_gas_m3_sensor": "🔥 GAS — or dynamic sensor €/m³ (takes priority)",
+          "vendita_kwh": "☀️ SOLAR SALE — Price €/kWh sold to grid (Solar preset only)",
+          "vendita_kwh_sensor": "☀️ SOLAR SALE — or dynamic sensor €/kWh (takes priority)",
+          "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
+          "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
+        },
+        "description": "For each resource: set the fixed value OR select a sensor (sensor takes priority). At the bottom, Photovoltaic splits consumption between grid (cost) and solar (saving)."
+      },
+      "hub_notifications": {
+        "title": "Hub — Notifications"
+      },
+      "hub_schedule": {
+        "title": "Hub — Schedules"
+      },
+      "init": {
+        "title": "Edit Device",
+        "data": {
+          "appliance_name": "Device name",
+          "device_icon": "Icon",
+          "power_sensor": "Power/flow sensor",
+          "switch_entity": "Physical switch (optional)",
+          "trigger_entity": "External trigger entity (optional)",
+          "vacuum_entity": "Vacuum entity",
+          "battery_sensor": "Battery % sensor (optional)",
+          "source_unit": "Source unit",
+          "total_unit": "Total unit",
+          "work_threshold_w": "Detection threshold",
+          "trigger_delay_m": "Off delay (minutes)",
+          "start_delay_s": "Start delay (seconds)",
+          "custom_message": "Notification message",
+          "notify_push": "Push notification",
+          "notify_alexa": "Alexa notification",
+          "notify_google": "Google TTS notification",
+          "notify_whatsapp": "WhatsApp notification",
+          "image_on": "ON state image",
+          "image_off": "OFF state image",
+          "power_sensor_2": "Pump power sensor (kWh)",
+          "power_share": "Sensor share (1.0 = 100% | 0.25 = 25% if shared)"
+        }
+      },
+      "advanced": {
+        "title": "Custom Schedule",
+        "data": {
+          "schedule_override": "Use custom schedule",
+          "auto_on_local": "Local automatic on",
+          "auto_off_local": "Local automatic off"
+        }
+      },
+      "reset_confirm": {
+        "title": "Reset Counters",
+        "data": {
+          "reset_now": "Reset all counters now (irreversible operation)"
+        }
+      }
+    }
+  }
+}
