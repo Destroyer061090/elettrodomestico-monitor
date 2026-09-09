@@ -1,7 +1,7 @@
 {
   "domain": "elettrodomestico_monitor",
   "name": "Elettrodomestico Monitor",
-  "version": "6.2.7",
+  "version": "6.2.8",
   "documentation": "https://github.com/Destroyer061090/elettrodomestico-monitor",
   "issue_tracker": "https://github.com/Destroyer061090/elettrodomestico-monitor/issues",
   "codeowners": [
@@ -12,17 +12,9 @@
   "iot_class": "local_push",
   "requirements": [],
   "after_dependencies": [
-    "sensor",
-    "binary_sensor",
-    "button",
-    "number",
-    "text",
-    "switch",
-    "time",
     "notify",
     "tts",
     "media_player",
-    "input_text",
-    "vacuum"
+    "input_text"
   ]
 }

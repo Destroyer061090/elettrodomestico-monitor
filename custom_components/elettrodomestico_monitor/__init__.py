@@ -1,8 +1,10 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.7.23
+# VERSION: 5.7.24
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
-# CHANGED: 2026-06-11
+# CHANGED: 2026-09-09 (v6.2.8: rimossa la registrazione manuale del path
+#          /brands/{DOMAIN} — obsoleta da HA 2026.3+, sostituita dalla nuova
+#          cartella brand/ nativa. Vedi CHANGELOG.md)
 # ============================================================
 """Elettrodomestico Monitor v18."""
 from __future__ import annotations
@@ -42,6 +44,12 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     # ── Register static paths ────────────────────────────────────────────────
+    # NOTA (v6.2.8): da HA 2026.3+ le immagini brand (icon.png/logo.png) si
+    # servono mettendole in una cartella brand/ dentro l'integrazione — HA le
+    # espone da solo tramite /api/brands/integration/{domain}/{image}. La
+    # precedente registrazione manuale di /brands/{DOMAIN} era un workaround
+    # per il vecchio meccanismo CDN-based, ora superato e rimosso. Vedi
+    # CHANGELOG.md e https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api
     from homeassistant.components.http import StaticPathConfig
     component_dir = Path(__file__).parent
     paths = [
@@ -50,12 +58,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             url_path=f"/{DOMAIN}",
             path=str(component_dir / "www"),
             cache_headers=True,
-        ),
-        # icon.png at /brands/{DOMAIN}/ — matches HA frontend icon requests
-        StaticPathConfig(
-            url_path=f"/brands/{DOMAIN}",
-            path=str(component_dir),
-            cache_headers=False,  # no cache so icon changes show immediately
         ),
     ]
     # Filter out paths that might already be registered

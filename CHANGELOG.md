@@ -5,6 +5,60 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [6.2.8] - 2026-09-09
+
+### Added
+- **`hacs.json`** alla radice del repo — mancava del tutto, causa quasi
+  certa del fallimento "Validazione HACS" nella prima esecuzione reale
+  della CI su GitHub.
+- **`README.md`** alla radice del repo — mancava del tutto (esisteva solo
+  una copia dentro `custom_components/elettrodomestico_monitor/`, con
+  versione disallineata: 6.1.0 mentre il progetto era già a 6.2.7).
+  HACS mostra il README della radice nella scheda del repository, quindi
+  la sua assenza è un problema a sé, non solo estetico.
+- **`custom_components/elettrodomestico_monitor/brand/icon.png`** — nuova
+  cartella `brand/` con l'icona, seguendo il meccanismo nativo introdotto
+  da Home Assistant 2026.3 (vedi
+  https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api).
+
+### Changed — pulizia in vista della pubblicazione HACS
+- **`manifest.json`**: `after_dependencies` conteneva piattaforme generiche
+  (`sensor`, `binary_sensor`, `button`, `number`, `text`, `switch`, `time`,
+  `vacuum`) mescolate a vere integrazioni esterne. Le piattaforme non sono
+  "integrazioni" da attendere — sono fornite anche dalla nostra stessa
+  integrazione tramite `async_forward_entry_setups`. Rimosse; restano solo
+  le dipendenze reali: `notify`, `tts`, `media_player`, `input_text`.
+- **`__init__.py`**: rimossa la registrazione manuale del path HTTP
+  `/brands/{DOMAIN}` (un workaround per il vecchio meccanismo CDN-based
+  di brands.home-assistant.io). Da HA 2026.3+ le immagini in una cartella
+  `brand/` dentro l'integrazione vengono servite automaticamente dal
+  nuovo sistema nativo — nessuna registrazione manuale necessaria.
+  Rimosso anche il vecchio `icon.png` alla radice del componente (non più
+  referenziato da nessun path, sostituito da `brand/icon.png`).
+- **`custom_components/elettrodomestico_monitor/README.md`** rimosso
+  (duplicato della radice — è quello che ha causato la versione
+  disallineata segnalata dall'utente).
+- **`bump_version.sh`**: aggiunta la sincronizzazione automatica della
+  riga "**Versione:**" in `README.md` (radice) ad ogni bump — prima
+  andava aggiornata a mano ed è proprio così che si era disallineata.
+  Verificato con test end-to-end, incluso il caso limite in cui la riga
+  versione non fosse presente (avvisa senza bloccare lo script).
+
+### Non affrontato in questa release — servono i log reali
+- I fallimenti di **Hassfest**, **Lint (ruff)** e **Test (pytest)** nella
+  CI reale non sono stati diagnosticati: l'immagine allegata mostra solo
+  l'esito (✗/✓), non il testo dell'errore. Il fix di `after_dependencies`
+  potrebbe risolvere Hassfest (è la causa più plausibile), ma senza il
+  log non è verificabile con certezza. Lint e Test non erano mai stati
+  eseguiti con il vero `ruff`/`pytest-homeassistant-custom-component`
+  (nessun accesso di rete disponibile in fase di sviluppo) — è la prima
+  esecuzione reale e ha trovato problemi che l'ambiente di sviluppo non
+  poteva vedere. Richiesto il testo completo di questi tre job per
+  procedere.
+
+### Fixed
+-
+
 ## [6.2.7] - 2026-09-07
 
 ### Changed — su richiesta dell'utente, correzione a v6.2.6

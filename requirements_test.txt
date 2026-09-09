@@ -1,0 +1,8 @@
+# Dipendenze per eseguire i test in tests/ (locale o CI).
+# NON servono per far funzionare l'integrazione in Home Assistant:
+# solo per lo sviluppo.
+
+pytest
+pytest-asyncio
+pytest-homeassistant-custom-component
+ruff

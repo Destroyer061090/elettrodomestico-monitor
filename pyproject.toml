@@ -1,0 +1,23 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# Scope volutamente stretto alla prima adozione: il codice esistente non è
+# mai stato passato da un linter, quindi partiamo dai controlli che
+# intercettano bug reali (esattamente il tipo di problema trovato
+# nell'audit v6.1.0 in migration.py) e NON dallo stile.
+#   E9  = errori di sintassi
+#   F   = pyflakes (import inutilizzati, variabili non definite, codice
+#         morto/irraggiungibile, self-comparison, ecc.)
+#   B   = bugbear (mutable default arguments, except troppo ampi, ecc.)
+select = ["E9", "F", "B"]
+ignore = [
+    "F401",  # import non usati: troppo rumoroso da abilitare a freddo su
+             # 24 moduli mai controllati; da attivare in un secondo momento
+             # modulo per modulo.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401"]  # nei test è normale importare simboli solo per
+                       # verificarne la presenza/comportamento
