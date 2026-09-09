@@ -20,7 +20,8 @@ innocuo). Questi test coprono comunque i comportamenti più delicati:
 from __future__ import annotations
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_restore_cache
+from homeassistant.core import State
 
 from custom_components.elettrodomestico_monitor.const import (
     CONF_INSTANCE_ID,
@@ -84,11 +85,19 @@ async def test_main_switch_defaults_off_with_no_data(hass):
 
 async def test_notify_switch_restores_previous_state(hass):
     """Dopo un riavvio, il toggle di notifica deve ripristinare lo stato
-    in cui l'utente lo aveva lasciato, non tornare al default di config."""
+    in cui l'utente lo aveva lasciato, non tornare al default di config.
+
+    `mock_restore_cache` + `switch.hass = hass` sono necessari perché
+    `RestoreEntity.async_get_last_state()` (ereditata, non reimplementata
+    da `_NotifySwitch`) legge la cache di ripristino reale tramite
+    `self.hass` e `self.entity_id` — un'entità istanziata direttamente
+    (senza passare per l'intera piattaforma) non ha `self.hass` impostato
+    di default."""
     entry = _entry({CONF_NOTIFY_PUSH: False, CONF_INSTANCE_ID: "i2", CONF_SLOT: "2"})
     switch = _NotifySwitch(entry, "Test2", "2", "notifica_push",
                             "Notifica Push Test2", CONF_NOTIFY_PUSH, "mdi:x", False)
-    switch._stub_last_state = type("S", (), {"state": "on"})()
+    mock_restore_cache(hass, [State(switch.entity_id, "on")])
+    switch.hass = hass
     await switch.async_added_to_hass()
     assert switch.is_on is True
 
@@ -100,7 +109,7 @@ async def test_notify_switch_uses_config_default_on_first_install(hass):
     entry = _entry({CONF_NOTIFY_PUSH: True, CONF_INSTANCE_ID: "i2", CONF_SLOT: "2"})
     switch = _NotifySwitch(entry, "Test2", "2", "notifica_push",
                             "Notifica Push Test2", CONF_NOTIFY_PUSH, "mdi:x", False)
-    switch._stub_last_state = None
+    switch.hass = hass  # nessuno stato in cache di ripristino per questo entity_id
     await switch.async_added_to_hass()
     assert switch.is_on is True
 

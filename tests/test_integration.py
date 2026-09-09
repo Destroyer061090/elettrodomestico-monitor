@@ -79,7 +79,10 @@ async def test_hub_and_appliance_setup_creates_expected_entities(hass, enable_cu
 
     # Il coordinator deve essere registrato — è il punto da cui tutte le
     # piattaforme (sensor, switch, binary_sensor, ...) leggono i dati.
-    assert "lavatrice1" in hass.data[DOMAIN]
+    # NOTA: registrato per entry.entry_id (un ULID generato da HA), non per
+    # instance_id — bug del test corretto dopo la prima esecuzione reale
+    # della CI (vedi CHANGELOG.md).
+    assert appliance_entry.entry_id in hass.data[DOMAIN]
 
     # Lo switch principale deve esistere con l'entity_id atteso (costruito
     # da switch.py: f"switch.{SFX_SW_SWITCH}_x{slot}") ed essere disponibile.

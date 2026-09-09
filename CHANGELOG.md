@@ -5,6 +5,49 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [6.3.1] - 2026-09-09
+
+### Changed — nessuna modifica al codice dell'integrazione, solo ai test
+Prima esecuzione reale di `pytest tests/ -v` con `asyncio_mode = "auto"`
+attivo (v6.3.0): 66/70 test sono girati per davvero, rivelando 3 bug nei
+*test*, non nel codice del componente. Nessuno di questi fix tocca
+`custom_components/elettrodomestico_monitor/` — il bump di versione è
+solo per tracciabilità.
+
+- **`tests/test_integration.py`**: il test assumeva che il coordinator
+  fosse registrato in `hass.data[DOMAIN]` con chiave `instance_id`
+  (`"lavatrice1"`). Il codice reale (`__init__.py`) lo registra con
+  chiave `entry.entry_id` (un ULID generato da Home Assistant) — bug
+  del test, non del componente. Corretta l'asserzione.
+- **`tests/test_irrigation_coordinator.py`**: 4 test facevano
+  `monkeypatch.setattr(hass.services, "async_call", ...)` per
+  intercettare le chiamate a `turn_on`/`turn_off`. Contro la vera
+  `ServiceRegistry` di Home Assistant questo fallisce
+  (`AttributeError: 'ServiceRegistry' object attribute 'async_call' is
+  read-only` — la classe reale non permette di sovrascrivere quel
+  metodo per istanza). Sostituito con `async_mock_service()`, l'helper
+  ufficiale di `pytest-homeassistant-custom-component` pensato apposta
+  per questo: registra un servizio fittizio reale e restituisce la
+  lista delle chiamate ricevute.
+- **`tests/test_switch.py`**: il test di ripristino stato
+  (`RestoreEntity`) impostava un attributo `_stub_last_state` che
+  esisteva solo nell'harness di sviluppo locale (mai eseguito con la
+  vera libreria) — la vera `RestoreEntity.async_get_last_state()` non lo
+  legge affatto, restituisce sempre `None` per un'entità istanziata
+  senza `self.hass` impostato. Sostituito con `mock_restore_cache()` +
+  `switch.hass = hass`, il pattern standard per testare `RestoreEntity`.
+
+### Nota di trasparenza
+Questi 3 fix non sono stati verificati con il mio harness locale (a
+differenza di tutto il resto del progetto) — usano API reali del
+framework (`async_mock_service`, `mock_restore_cache`) che non ho mai
+dovuto stubare finora. Si basano sulla conoscenza di questi pattern
+standard nell'ecosistema Home Assistant, non su un'esecuzione
+verificata qui. Da confermare con il prossimo run reale della CI.
+
+### Fixed
+-
+
 ## [6.3.0] - 2026-09-09
 
 ### Fixed — Test (pytest), 66 errori su 70 test raccolti

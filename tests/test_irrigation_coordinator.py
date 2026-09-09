@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
 from custom_components.elettrodomestico_monitor import irrigation_coordinator as irr_mod
 from custom_components.elettrodomestico_monitor.const import (
@@ -69,7 +69,7 @@ async def test_start_cycle_rejects_when_already_active(hass):
     assert coord._cycle_task is None  # nessun nuovo ciclo avviato
 
 
-async def test_zones_activate_in_configured_order(hass, monkeypatch):
+async def test_zones_activate_in_configured_order(hass):
     """Le zone devono attivarsi nell'ordine di zone_order, una alla
     volta — non in parallelo e non nell'ordine di definizione se
     zone_order lo sovrascrive."""
@@ -79,21 +79,18 @@ async def test_zones_activate_in_configured_order(hass, monkeypatch):
     ], zone_order=[1, 0])  # ordine invertito rispetto alla definizione
     await coord.storage.async_load()
 
-    calls = []
-    async def _spy_call(domain, service, data):
-        calls.append((service, data.get("entity_id")))
-    monkeypatch.setattr(hass.services, "async_call", _spy_call)
+    turn_on_calls = async_mock_service(hass, "homeassistant", "turn_on")
 
     await coord.start_cycle()
     await coord._cycle_task
 
-    turn_on_order = [eid for (svc, eid) in calls if svc == "turn_on"]
+    turn_on_order = [c.data.get("entity_id") for c in turn_on_calls]
     assert turn_on_order == ["switch.z2", "switch.z1"]  # rispetta zone_order, non l'ordine di definizione
     assert coord._active_zone_idx == -1  # nessuna zona resta "attiva" a fine ciclo
     assert coord._cycle_active is False
 
 
-async def test_manual_start_does_not_reissue_turn_on(hass, monkeypatch):
+async def test_manual_start_does_not_reissue_turn_on(hass):
     """Se l'utente ha già acceso manualmente lo switch della zona,
     start_cycle(manual=True) deve limitarsi a tracciare/contare senza
     ri-inviare un comando turn_on (che sarebbe ridondante e potrebbe
@@ -103,21 +100,18 @@ async def test_manual_start_does_not_reissue_turn_on(hass, monkeypatch):
     ])
     await coord.storage.async_load()
 
-    calls = []
-    async def _spy_call(domain, service, data):
-        calls.append((service, data.get("entity_id")))
-    monkeypatch.setattr(hass.services, "async_call", _spy_call)
+    turn_on_calls = async_mock_service(hass, "homeassistant", "turn_on")
+    turn_off_calls = async_mock_service(hass, "homeassistant", "turn_off")
 
     await coord.start_cycle(zone_idx=0, manual=True)
     await coord._cycle_task
 
-    turn_on_calls = [c for c in calls if c[0] == "turn_on"]
     assert turn_on_calls == []  # nessun turn_on: lo switch era già acceso
-    turn_off_calls = [c for c in calls if c[0] == "turn_off" and c[1] == "switch.z3"]
-    assert len(turn_off_calls) >= 1  # ma DEVE comunque spegnersi a fine durata
+    turn_off_z3 = [c for c in turn_off_calls if c.data.get("entity_id") == "switch.z3"]
+    assert len(turn_off_z3) >= 1  # ma DEVE comunque spegnersi a fine durata
 
 
-async def test_zone_turn_off_is_called_twice_but_harmlessly(hass, monkeypatch):
+async def test_zone_turn_off_is_called_twice_but_harmlessly(hass):
     """Osservazione emersa scrivendo questo test (non un bug da correggere):
     lo spegnimento della zona attiva viene chiamato sia dentro il loop
     ('Deactivate zone') sia di nuovo nel blocco `finally` (rete di
@@ -130,19 +124,16 @@ async def test_zone_turn_off_is_called_twice_but_harmlessly(hass, monkeypatch):
     ])
     await coord.storage.async_load()
 
-    calls = []
-    async def _spy_call(domain, service, data):
-        calls.append((service, data.get("entity_id")))
-    monkeypatch.setattr(hass.services, "async_call", _spy_call)
+    turn_off_calls = async_mock_service(hass, "homeassistant", "turn_off")
 
     await coord.start_cycle()
     await coord._cycle_task
 
-    turn_off_calls = [c for c in calls if c[0] == "turn_off" and c[1] == "switch.z4"]
-    assert len(turn_off_calls) == 2
+    turn_off_z4 = [c for c in turn_off_calls if c.data.get("entity_id") == "switch.z4"]
+    assert len(turn_off_z4) == 2
 
 
-async def test_interrupted_cycle_is_not_counted(hass, monkeypatch):
+async def test_interrupted_cycle_is_not_counted(hass):
     """Un ciclo fermato manualmente a metà (stop_cycle) non deve
     incrementare il contatore cicli — solo un ciclo completato per
     intero conta, altrimenti le statistiche mentirebbero."""
@@ -151,9 +142,8 @@ async def test_interrupted_cycle_is_not_counted(hass, monkeypatch):
     ])
     await coord.storage.async_load()
 
-    async def _noop_call(domain, service, data):
-        pass
-    monkeypatch.setattr(hass.services, "async_call", _noop_call)
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
 
     cycles_before = coord._c_today
     await coord.start_cycle()
