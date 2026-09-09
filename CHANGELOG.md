@@ -5,6 +5,33 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [6.3.0] - 2026-09-09
+
+### Fixed — Test (pytest), 66 errori su 70 test raccolti
+- **Causa reale, non un bug nel codice testato**: mancava del tutto la
+  sezione `[tool.pytest.ini_options]` con `asyncio_mode = "auto"` in
+  `pyproject.toml`. Senza questa riga, `pytest-asyncio` (in modalità
+  STRICT di default) richiede un marcatore esplicito
+  `@pytest.mark.asyncio` su OGNI singola funzione `async def test_...` —
+  che nessuno dei ~70 test scritti finora aveva mai avuto, perché non è
+  necessario quando `asyncio_mode = "auto"` è impostato (lo standard per
+  i progetti che usano `pytest-homeassistant-custom-component`, la cui
+  fixture `hass` è essa stessa asincrona). Aggiunta la configurazione
+  mancante — nessuna modifica ai file di test è stata necessaria.
+- I 4 test già passati prima del fix (`test_switch.py`, quelli scritti
+  come funzioni sincrone senza `async def`) confermano che il problema
+  era isolato ai test asincroni, non un problema di ambiente più ampio.
+
+### Fixed — Hassfest
+- `manifest.json`: `[ERROR] [MANIFEST] Manifest keys are not sorted
+  correctly` — le chiavi non erano in ordine alfabetico dopo
+  `domain`/`name` (richiesto da hassfest). Riordinate; verificato che
+  `bump_version.sh` non alteri l'ordine nei bump futuri (aggiorna il
+  valore di una chiave già esistente, non la riposiziona).
+
+### Fixed
+-
+
 ## [6.2.9] - 2026-09-09
 
 ### Added

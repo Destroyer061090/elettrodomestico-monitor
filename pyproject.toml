@@ -1,3 +1,14 @@
+[tool.pytest.ini_options]
+# FIX (v6.3.0): mancava del tutto questa sezione. Senza asyncio_mode = "auto",
+# pytest-asyncio (in modalità STRICT di default) richiede un marcatore
+# esplicito @pytest.mark.asyncio su OGNI funzione `async def test_...` — che
+# i nostri ~70 test non hanno mai avuto (non serve: è lo standard per i
+# progetti che usano pytest-homeassistant-custom-component, la cui fixture
+# `hass` è essa stessa asincrona). Risultato prima di questo fix: 66 ERROR
+# su 70 test raccolti, nessuno dei quali un bug nel codice testato — solo
+# nella configurazione di pytest stesso.
+asyncio_mode = "auto"
+
 [tool.ruff]
 target-version = "py313"
 line-length = 100
