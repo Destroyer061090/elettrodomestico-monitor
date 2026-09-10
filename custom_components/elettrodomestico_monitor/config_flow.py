@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    config_flow.py
-# VERSION: 6.1.0
+# VERSION: 6.2.0
 # DESC:    Config flow — setup wizard for all device types including irrigation
 # CHANGED: 2026-07-22 (v6.2.1: validazione mancante di flow_sensor nello step
 #          irrigazione + controllo duplicati per entità di controllo — vacuum_
@@ -9,6 +9,7 @@
 # ============================================================
 """Config flow for Elettrodomestico Monitor v12."""
 from __future__ import annotations
+import logging
 import uuid
 import voluptuous as vol
 from homeassistant import config_entries
@@ -16,6 +17,8 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 import os as _os
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     DOMAIN,
@@ -60,7 +63,20 @@ _SEL_TEXT        = selector.selector({"text": {}})
 _SEL_BOOL        = selector.selector({"boolean": {}})
 _SEL_NUM_INT     = selector.selector({"number": {"mode": "box", "min": 0, "max": 9999, "step": 1}})
 _SEL_PCT         = selector.selector({"number": {"mode": "slider", "min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"}})
+# FIX (audit v7.0.0, minore): dev_start_pct/dev_stop_pct usavano _SEL_NUM_INT
+# (0-9999) nel config_flow, incoerente con i limiti 1-100 dichiarati dalle
+# entità number.py corrispondenti — un valore come 9999 veniva accettato in
+# fase di configurazione pur non avendo senso per una soglia percentuale.
+_SEL_PCT_1_100   = selector.selector({"number": {"mode": "slider", "min": 1, "max": 100, "step": 1, "unit_of_measurement": "%"}})
 _SEL_NUM_FLOAT   = selector.selector({"number": {"mode": "box", "min": 0, "max": 9999, "step": 0.001}})
+# FIX (audit v7.0.0, minore): le tariffe (EUR/kWh, EUR/m³) condividevano
+# _SEL_NUM_FLOAT (max 9999) — un refuso come "999" invece di "0.999" veniva
+# accettato senza alcun avviso. Un tetto di 10 €/unità è ampiamente
+# generoso per qualunque tariffa reale (anche con prezzi dinamici) ma
+# intercetta un errore di virgola decimale. Non tocca _SEL_NUM_FLOAT, che
+# resta condiviso da altri campi (soglie W, moltiplicatore potenza) dove
+# 9999 è un range legittimo.
+_SEL_NUM_PRICE   = selector.selector({"number": {"mode": "box", "min": 0, "max": 10, "step": 0.001}})
 _SEL_SLOT        = selector.selector({"number": {"mode": "box", "min": 1, "max": 999,  "step": 1}})
 # Only show user-facing presets in config flow (hidden presets excluded)
 _PRESET_IDS_UI = [
@@ -266,6 +282,21 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data.setdefault(CONF_INSTANCE_ID, _uuid.uuid4().hex[:12])
         slot = data.get(CONF_SLOT, "?")
         name = data.get(CONF_APPLIANCE_NAME, "Device")
+        # FIX (audit v7.0.0, alto): a differenza di ogni altro step del
+        # wizard, questo flow non applicava mai il controllo di unicità
+        # slot — un import (o re-import) con uno slot già occupato da un
+        # altro device creava una seconda entry che condivide lo stesso
+        # slot, situazione che l'interfaccia utente non permette mai.
+        try:
+            slot_int = int(slot)
+        except (TypeError, ValueError):
+            _LOGGER.error("[EM Import] Slot non valido nel file di import: %s", slot)
+            return self.async_abort(reason="slot_invalid")
+        if slot_int in _used_slots(self.hass):
+            _LOGGER.error(
+                "[EM Import] Slot x%s già in uso — creazione entry duplicata bloccata (%s)",
+                slot_int, name)
+            return self.async_abort(reason="slot_taken")
         # Title prefix matching each type
         if et == ENTRY_TYPE_DEVICE or et == "device":
             title = f"(x{slot}) 🔋 {name}"
@@ -283,13 +314,13 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="hub_costs",
             data_schema=vol.Schema({
-                vol.Optional(CONF_COSTO_KWH,   default=DEFAULT_COST): _SEL_NUM_FLOAT,
+                vol.Optional(CONF_COSTO_KWH,   default=DEFAULT_COST): _SEL_NUM_PRICE,
                 vol.Optional(CONF_COSTO_KWH_SENSOR):                  _SEL_SENSOR_OPT,
-                vol.Optional(CONF_COSTO_ACQUA, default=DEFAULT_COST): _SEL_NUM_FLOAT,
+                vol.Optional(CONF_COSTO_ACQUA, default=DEFAULT_COST): _SEL_NUM_PRICE,
                 vol.Optional(CONF_COSTO_ACQUA_SENSOR):                _SEL_SENSOR_OPT,
-                vol.Optional(CONF_COSTO_GAS,   default=DEFAULT_COST): _SEL_NUM_FLOAT,
+                vol.Optional(CONF_COSTO_GAS,   default=DEFAULT_COST): _SEL_NUM_PRICE,
                 vol.Optional(CONF_COSTO_GAS_SENSOR):                  _SEL_SENSOR_OPT,
-                vol.Optional(CONF_VENDITA_KWH, default=DEFAULT_COST): _SEL_NUM_FLOAT,
+                vol.Optional(CONF_VENDITA_KWH, default=DEFAULT_COST): _SEL_NUM_PRICE,
                 vol.Optional(CONF_VENDITA_KWH_SENSOR):                _SEL_SENSOR_OPT,
                 vol.Optional(CONF_FV_ENABLED, default=False):         _SEL_BOOL,
                 vol.Optional(CONF_FV_GRID_SENSOR):                    _SEL_SENSOR_OPT,
@@ -336,6 +367,17 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Hub-only: finish config flow without creating a device
             if self._preset_id == _PRESET_HUB_ONLY:
                 if self._need_hub:
+                    # FIX (audit v7.0.0, minore): l'unica protezione contro
+                    # un secondo Hub era il controllo "_hub_entry() is None"
+                    # fatto una volta sola all'inizio del flow — due flow
+                    # avviati quasi in contemporanea potevano entrambi
+                    # osservare "nessun hub" prima che l'altro finisse,
+                    # creando due entry Hub. async_set_unique_id +
+                    # _abort_if_unique_id_configured usa il registro
+                    # (entry + flow in corso) di HA, sicuro anche in caso di
+                    # race.
+                    await self.async_set_unique_id(f"{DOMAIN}_hub")
+                    self._abort_if_unique_id_configured(error="hub_already_exists")
                     # Create hub entry directly with data collected in previous steps
                     hub_data = {
                         **self._hub,
@@ -419,6 +461,7 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             slot    = int(ui.get(CONF_SLOT, 1))
             trigger = _clean_entity(ui.get(CONF_TRIGGER_ENTITY))
             power   = _clean_entity(ui.get(CONF_POWER_SENSOR))
+            switch  = _clean_entity(ui.get(CONF_SWITCH_ENTITY))
             if slot in _used_slots(self.hass):
                 errors[CONF_SLOT] = "slot_taken"
             elif not power and not trigger:
@@ -427,6 +470,12 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
             elif trigger and _entity_used_elsewhere(self.hass, trigger, CONF_TRIGGER_ENTITY):
                 errors[CONF_TRIGGER_ENTITY] = "entity_in_use"
+            # FIX (audit v7.0.0, medio): il controllo anti-duplicazione era
+            # applicato a trigger/vacuum/dev_battery_sensor/dev_charge_switch
+            # ma non allo switch principale — due entry potevano puntare allo
+            # stesso switch.xyz fisico e inviargli comandi on/off scoordinati.
+            elif switch and _entity_used_elsewhere(self.hass, switch, CONF_SWITCH_ENTITY):
+                errors[CONF_SWITCH_ENTITY] = "entity_in_use"
             else:
                 if not power:
                     ui = dict(ui); ui[CONF_POWER_SENSOR] = trigger
@@ -570,8 +619,8 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_DEVICE_ICON, default="mdi:battery-charging"): _SEL_ICON,
                 vol.Required(CONF_DEV_BATTERY_SENSOR): _SEL_SENSOR,
                 vol.Optional(CONF_DEV_CHARGE_SWITCH): selector.selector({"entity": {"domain": "switch"}}),
-                vol.Optional(CONF_DEV_START_PCT, default=DEFAULT_DEV_START_PCT): _SEL_NUM_INT,
-                vol.Optional(CONF_DEV_STOP_PCT,  default=DEFAULT_DEV_STOP_PCT):  _SEL_NUM_INT,
+                vol.Optional(CONF_DEV_START_PCT, default=DEFAULT_DEV_START_PCT): _SEL_PCT_1_100,
+                vol.Optional(CONF_DEV_STOP_PCT,  default=DEFAULT_DEV_STOP_PCT):  _SEL_PCT_1_100,
                 vol.Optional(CONF_IMAGE_ON):  _image_selector_cached(self._dev_images),
                 vol.Optional(CONF_IMAGE_OFF): _image_selector_cached(self._dev_images),
                 vol.Optional(CONF_NOTIFY_PUSH,     default=False): _SEL_BOOL,
@@ -672,6 +721,17 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         appl = dict(self._appl)
         for k in ("_zone_step", "_num_zones"):
             appl.pop(k, None)
+        # FIX (audit v7.0.0, minore): una zona senza switch veniva accettata
+        # in silenzio nel wizard — l'utente scopriva solo a runtime che la
+        # zona non ha alcuna uscita controllabile. Non blocchiamo il wizard
+        # (può essere una scelta deliberata, da completare dopo tramite
+        # Opzioni), ma lo rendiamo tracciabile in log.
+        for i, zone in enumerate(appl.get(CONF_ZONES) or []):
+            if not zone.get("switch"):
+                _LOGGER.warning(
+                    "[EM] Irrigazione '%s': zona %d ('%s') creata senza switch — "
+                    "non potrà essere attivata finché non ne assegni uno dalle Opzioni.",
+                    appl.get(CONF_APPLIANCE_NAME, "?"), i + 1, zone.get("name", "?"))
         appl.setdefault(CONF_INSTANCE_ID, _uuid.uuid4().hex[:12])
         appl["entry_type"] = ENTRY_TYPE_IRRIGATION
         name = appl.get(CONF_APPLIANCE_NAME, "Irrigazione")
@@ -699,6 +759,10 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=f"(x{slot}) {name}", data=appl)
 
     async def async_step_hub_import(self, data: dict):
+        # FIX (audit v7.0.0, minore): stessa protezione anti-duplicato
+        # dell'altro punto di creazione Hub — vedi async_step_preset_select.
+        await self.async_set_unique_id(f"{DOMAIN}_hub")
+        self._abort_if_unique_id_configured(error="hub_already_exists")
         return self.async_create_entry(title="⚙️ Hub Globale", data=data)
 
     @staticmethod
@@ -730,13 +794,13 @@ class HubOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_hub_notifications()
         c = self._data
         return self.async_show_form(step_id="hub_costs", data_schema=vol.Schema({
-            vol.Optional(CONF_COSTO_KWH,   default=c.get(CONF_COSTO_KWH,   DEFAULT_COST)): _SEL_NUM_FLOAT,
+            vol.Optional(CONF_COSTO_KWH,   default=c.get(CONF_COSTO_KWH,   DEFAULT_COST)): _SEL_NUM_PRICE,
             _entity_schema_field(CONF_COSTO_KWH_SENSOR,   c.get(CONF_COSTO_KWH_SENSOR)):   _SEL_SENSOR_OPT,
-            vol.Optional(CONF_COSTO_ACQUA, default=c.get(CONF_COSTO_ACQUA, DEFAULT_COST)): _SEL_NUM_FLOAT,
+            vol.Optional(CONF_COSTO_ACQUA, default=c.get(CONF_COSTO_ACQUA, DEFAULT_COST)): _SEL_NUM_PRICE,
             _entity_schema_field(CONF_COSTO_ACQUA_SENSOR, c.get(CONF_COSTO_ACQUA_SENSOR)): _SEL_SENSOR_OPT,
-            vol.Optional(CONF_COSTO_GAS,   default=c.get(CONF_COSTO_GAS,   DEFAULT_COST)): _SEL_NUM_FLOAT,
+            vol.Optional(CONF_COSTO_GAS,   default=c.get(CONF_COSTO_GAS,   DEFAULT_COST)): _SEL_NUM_PRICE,
             _entity_schema_field(CONF_COSTO_GAS_SENSOR,   c.get(CONF_COSTO_GAS_SENSOR)):   _SEL_SENSOR_OPT,
-            vol.Optional(CONF_VENDITA_KWH, default=c.get(CONF_VENDITA_KWH, DEFAULT_COST)): _SEL_NUM_FLOAT,
+            vol.Optional(CONF_VENDITA_KWH, default=c.get(CONF_VENDITA_KWH, DEFAULT_COST)): _SEL_NUM_PRICE,
             _entity_schema_field(CONF_VENDITA_KWH_SENSOR, c.get(CONF_VENDITA_KWH_SENSOR)): _SEL_SENSOR_OPT,
             vol.Optional(CONF_FV_ENABLED, default=c.get(CONF_FV_ENABLED, False)): _SEL_BOOL,
             _entity_schema_field(CONF_FV_GRID_SENSOR, c.get(CONF_FV_GRID_SENSOR)): _SEL_SENSOR_OPT,
@@ -837,12 +901,16 @@ class ApplianceOptionsFlow(config_entries.OptionsFlow):
         if ui is not None:
             power   = _clean_entity(ui.get(CONF_POWER_SENSOR))
             trigger = _clean_entity(ui.get(CONF_TRIGGER_ENTITY, self._data.get(CONF_TRIGGER_ENTITY,"")))
+            switch  = _clean_entity(ui.get(CONF_SWITCH_ENTITY, self._data.get(CONF_SWITCH_ENTITY,"")))
             if not power and not trigger:
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
             elif power and not self.hass.states.get(power):
                 errors[CONF_POWER_SENSOR] = "entity_not_found"
             elif trigger and _entity_used_elsewhere(self.hass, trigger, CONF_TRIGGER_ENTITY, exclude_entry_id=self._entry.entry_id):
                 errors[CONF_TRIGGER_ENTITY] = "entity_in_use"
+            # FIX (audit v7.0.0, medio): stesso controllo mancante anche qui — vedi async_step_appliance.
+            elif switch and _entity_used_elsewhere(self.hass, switch, CONF_SWITCH_ENTITY, exclude_entry_id=self._entry.entry_id):
+                errors[CONF_SWITCH_ENTITY] = "entity_in_use"
             else:
                 self._data.update(_clean_appl_data(dict(ui)))
                 return await self.async_step_advanced()
@@ -1026,8 +1094,8 @@ class DeviceOptionsFlow(config_entries.OptionsFlow):
         }
         schema[_entity_schema_field(CONF_DEV_BATTERY_SENSOR, c.get(CONF_DEV_BATTERY_SENSOR))] = _SEL_SENSOR
         schema[_entity_schema_field(CONF_DEV_CHARGE_SWITCH,  c.get(CONF_DEV_CHARGE_SWITCH))]  = _SEL_SWITCH
-        schema[vol.Optional(CONF_DEV_START_PCT, default=c.get(CONF_DEV_START_PCT, DEFAULT_DEV_START_PCT))] = _SEL_NUM_INT
-        schema[vol.Optional(CONF_DEV_STOP_PCT,  default=c.get(CONF_DEV_STOP_PCT,  DEFAULT_DEV_STOP_PCT))]  = _SEL_NUM_INT
+        schema[vol.Optional(CONF_DEV_START_PCT, default=c.get(CONF_DEV_START_PCT, DEFAULT_DEV_START_PCT))] = _SEL_PCT_1_100
+        schema[vol.Optional(CONF_DEV_STOP_PCT,  default=c.get(CONF_DEV_STOP_PCT,  DEFAULT_DEV_STOP_PCT))]  = _SEL_PCT_1_100
         schema[vol.Optional(CONF_IMAGE_ON,  default=c.get(CONF_IMAGE_ON,  ""))] = _image_selector_cached(_images)
         schema[vol.Optional(CONF_IMAGE_OFF, default=c.get(CONF_IMAGE_OFF, ""))] = _image_selector_cached(_images)
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))

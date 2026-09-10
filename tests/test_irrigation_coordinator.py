@@ -133,6 +133,38 @@ async def test_zone_turn_off_is_called_twice_but_harmlessly(hass):
     assert len(turn_off_z4) == 2
 
 
+async def test_cycle_time_is_not_double_counted(hass):
+    """FIX (audit v7.0.0, CRITICO): il tempo veniva accumulato sia dai tick
+    periodici di _async_update_data() (ogni COORDINATOR_UPDATE_INTERVAL,
+    mentre _cycle_active è True) sia una seconda volta nel blocco `finally`
+    di _run_cycle(), che ricalcolava e sommava elapsed_h dall'inizio del
+    ciclo — un ciclo di 10 minuti risultava conteggiato come ~20 in
+    "Tempo Oggi". Qui simuliamo 3 tick periodici durante un ciclo breve e
+    verifichiamo che il tempo finale rifletta SOLO i tick, senza un
+    ulteriore salto quando il ciclo termina."""
+    coord = _make_coordinator(hass, [
+        {"name": "Z", "switch": "switch.z8", "duration_min": 0.01},
+    ])
+    await coord.storage.async_load()
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+
+    await coord.start_cycle()
+    # Simula 3 tick periodici del coordinator MENTRE il ciclo è attivo —
+    # nella realtà _async_update_data gira ogni COORDINATOR_UPDATE_INTERVAL
+    # indipendentemente dal task che sta eseguendo il ciclo.
+    for _ in range(3):
+        await coord._async_update_data()
+    t_from_ticks = coord._t_today
+    assert t_from_ticks > 0
+
+    await coord._cycle_task  # il ciclo termina (durata minima + sleep mockato)
+
+    # Il blocco finally NON deve sommare di nuovo il tempo trascorso reale:
+    # il totale dopo la fine del ciclo deve restare quello dei tick, non raddoppiare.
+    assert coord._t_today == t_from_ticks
+
+
 async def test_interrupted_cycle_is_not_counted(hass):
     """Un ciclo fermato manualmente a metà (stop_cycle) non deve
     incrementare il contatore cicli — solo un ciclo completato per

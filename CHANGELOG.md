@@ -5,6 +5,173 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.0.1] - 2026-09-10
+
+### Fixed — Correzione a un fix della 7.0.0 (segnalato dai log reali dell'utente)
+
+La 7.0.0 aveva impostato `state_class: total_increasing` su **tutti** i
+sensori periodo che si azzerano, inclusi quelli di **costo in €**
+(`_CostoPeriod`, `_RisparmioSole`, `_CostoRete` in sensor.py, `_IrrCosto`
+per l'irrigazione). Sbagliato, per due motivi distinti emersi nei log reali
+dell'utente pochi minuti dopo il deploy:
+
+1. **`_CostoRete` e `_IrrCosto` hanno `device_class: monetary`**, che Home
+   Assistant non ammette in combinazione con `total_increasing` in nessun
+   caso ("is using state class 'total_increasing' which is impossible
+   considering device class ('monetary') it is using; expected None or
+   one of 'total'") — errore di validazione ripetuto ad ogni avvio (114
+   occorrenze nei log).
+2. **Tutti e 4 questi sensori sono `accumulo_fisico × tariffa`**, e la
+   tariffa può essere un sensore dinamico configurato nell'Hub. A
+   differenza di un contatore fisico (kWh, litri, cicli — che sale SOLO
+   per eventi reali), questo valore può scendere anche a metà giornata se
+   il prezzo cala, senza che sia avvenuto alcun reset di periodo — violando
+   l'assunzione di monotonicità di `total_increasing`. Confermato nei log:
+   `sensor.costo_rete_oggi_x4` passato da 0.35 a 0.34 alle 18:16, in pieno
+   giorno, non a mezzanotte ("state is not strictly increasing", 106
+   occorrenze).
+
+Verificato (fonte: developers.home-assistant.io/docs/core/entity/sensor e
+issue home-assistant/core#115009) che `total` con `last_reset` sarebbe la
+soluzione "da manuale", ma `last_reset` è deprecato/non supportato in modo
+affidabile nelle versioni recenti di HA, e la stessa documentazione
+raccomanda in questi casi `state_class` a `None` (nessuna statistica a
+lungo termine per quell'entità specifica) come scelta sicura. È quello che
+è stato fatto qui per tutti e 4 i sensori: restano sensori numerici
+corretti e visibili nella cronologia normale, ma non partecipano più alle
+Statistiche a lungo termine di HA (niente più grafico "Statistiche"
+dedicato per quei 4 sensori specifici — gli altri sensori periodo/totale
+in kWh/L/cicli, genuinamente monotoni, restano `total_increasing` come
+nella 7.0.0 e non risultano coinvolti in nessuno dei due errori).
+
+**Nota per chi ha già installato la 7.0.0**: dopo l'aggiornamento a
+7.0.1 e il riavvio di Home Assistant, gli errori in log si fermano. Se il
+grafico Statistiche di uno di questi 4 sensori mostra un andamento strano
+per la finestra in cui girava la 7.0.0, può essere corretto/rimosso da
+**Impostazioni → Sistema → Correggi problemi rilevati** oppure da
+**Strumenti per sviluppatori → Statistiche** (funzione "Regola" o
+eliminazione dei punti dati per quel periodo) — non è necessario per il
+funzionamento futuro dell'integrazione, solo per pulire lo storico grafico.
+
+## [7.0.0] - 2026-09-10
+
+Major bump: risoluzione completa dei 29 problemi (3 critici, 5 alti, 9 medi,
+12 minori) emersi dall'audit del codice del 2026-09-10. Nessuna modifica
+richiesta alla configurazione esistente — gli utenti aggiornano senza
+riconfigurare nulla — ma alcuni fix correggono l'*interpretazione* di dati
+già salvati (in particolare lo `state_class` dei sensori), da qui il major
+invece di un minor.
+
+**Nota di trasparenza**: in questo ambiente non è disponibile un interprete
+Python funzionante, quindi — a differenza delle release precedenti — questi
+fix NON sono stati verificati con `pytest tests/ -v` prima della consegna.
+Sono stati rivisti a mano riga per riga (firme dei costruttori, indentazione,
+punti di chiamata, test esistenti potenzialmente in conflitto) e i nuovi
+test aggiunti sono stati scritti per essere eseguiti dalla CI del progetto
+(hassfest/HACS/ruff/pytest, `.github/workflows/validate.yml`) al primo push.
+Da considerare "da confermare al primo run reale della CI", come già fatto
+in trasparenza per la 6.3.1.
+
+### Fixed — Critico
+- **sensor.py**: quasi tutti i sensori periodo (energia/costo/cicli/acqua
+  oggi-mese-anno, kWh totale) usavano `state_class: total` invece di
+  `total_increasing`. Si azzerano ogni notte/mese/anno o al pulsante
+  "Reset Contatori": con `total`, Home Assistant registrava il calo come
+  un dato reale (es. immissione in rete), generando un picco negativo
+  fittizio nelle Statistiche a lungo termine / Energy Dashboard.
+- **irrigation_coordinator.py**: il tempo di irrigazione veniva sommato sia
+  dai tick periodici del coordinator sia una seconda volta nel blocco
+  `finally` di fine ciclo — un'irrigazione di 10 minuti risultava
+  conteggiata come ~20 in "Tempo Oggi/Mese/Anno".
+- **notify_helper.py**: le finestre orarie che attraversano la mezzanotte
+  (es. 22:00 → 06:00) non facevano mai scattare le notifiche vocali
+  Alexa/Google — il confronto `start <= now <= end` era sempre falso per
+  quel tipo di finestra, senza alcun errore in log.
+
+### Fixed — Alto
+- **services.py** (`import_config`): nessuna validazione del JSON importato
+  (crash non gestito su file malformato); il conteggio "creati" non
+  rifletteva il reale esito del flow di creazione.
+- **config_flow.py** (`async_step_import`): nessun controllo di unicità
+  slot — ora rifiuta un import che collide con uno slot già in uso.
+- **device_coordinator.py**: rollover giornaliero/mensile/annuale guidato
+  da un confronto in-memory del giorno, perso silenziosamente se HA
+  riavviava a cavallo della mezzanotte. Ora una callback pianificata a
+  23:59:59, come coordinator.py e irrigation_coordinator.py.
+- **coordinator.py**: un'entità trigger `unavailable` (perdita di
+  connettività cloud) oltre il debounce configurato spezzava un'unica
+  accensione fisica in più cicli; il poll periodico bypassava persino il
+  debounce esistente. Unificati in un helper condiviso, con una grazia più
+  lunga (5 minuti) per la sola perdita di connettività.
+- **tests/**: aggiunta copertura per sensor.py (enumerazione state_class su
+  tutti i sensori periodo/totale, elettrodomestici e irrigazione),
+  irrigation_coordinator.py (doppio conteggio tempo) e notify_helper.py
+  (finestra a cavallo della mezzanotte) — le tre criticità sopra sono ora
+  coperte da un test di regressione dedicato.
+
+### Fixed — Medio
+- **coordinator.py**: il "costo dell'ultimo ciclo" veniva ricalcolato con
+  la tariffa ATTUALE invece di quella storica già salvata — con tariffe
+  dinamiche cambiava anche dopo che il ciclo era finito.
+- **services.py**: `reset_sensors`/`set_maintenance`/`irrigation_start`/
+  `irrigation_stop` con un `entry_id` sconosciuto ora notificano l'errore
+  invece di un no-op silenzioso.
+- **config_flow.py**: `switch_entity` ora è controllato per uso duplicato
+  tra device diversi, come già avveniva per le altre entità di controllo.
+- **Traduzioni** (it/en/strings.json): aggiunto `fv_invert` mancante;
+  completate le schermate Opzioni di Device e Irrigation (che condividono
+  lo `step_id="init"` con Appliance ma non ne condividevano le traduzioni);
+  aggiunta traduzione per lo step `irr_zones`.
+- **notify_helper.py**: il messaggio WhatsApp ora viene troncato al limite
+  dichiarato dall'entità `input_text` invece di fallire silenziosamente.
+- **irrigation_coordinator.py**: aggiunto il rispetto del flag `fv_exclude`
+  (già presente in coordinator.py) per escludere la pompa dal conteggio
+  fotovoltaico.
+- **storage.py**: validazione di tipo sui dati ripristinati da disco — un
+  campo numerico corrotto non blocca più silenziosamente gli aggiornamenti
+  successivi del coordinator.
+- **migration.py**: aggiunto un marcatore di versione di schema esplicito
+  (`_migration_schema_version`), base per future migrazioni che debbano
+  trasformare (non solo aggiungere) una chiave.
+- **const.py**/**coordinator.py**: l'indicatore "main_on" del vacuum in UI
+  ora usa la stessa blocklist di stati non standard già usata per il
+  conteggio cicli/energia, invece di un'allowlist che non stava al passo.
+
+### Fixed — Minore
+- Possibile doppio Hub Globale in caso di race condition (aggiunto
+  `async_set_unique_id`).
+- Limiti soglie ricarica batteria (`dev_start_pct`/`dev_stop_pct`) allineati
+  a 1-100% nel config_flow, coerenti con le entità number.py.
+- Switch di zona irrigazione lasciato vuoto: ora tracciato in log invece di
+  essere accettato in silenzio.
+- Tariffe (EUR/kWh, EUR/m³): aggiunto un tetto di sanità (10 €/unità) contro
+  refusi di virgola decimale.
+- `sensor.py`: corretto il fallback a 0 (mai applicato) per la batteria
+  vacuum quando il dato è assente.
+- `vacuum.py`: un entity_id costruito a mano ora passa da `naming.py`.
+- `__init__.py`: sostituiti alcuni `except Exception: pass` silenziosi con
+  log diagnostici; l'unload dell'Hub ora verifica l'esito prima di ripulire
+  lo stato, come gli altri tipi di entry.
+- `www/elettrodomestico-monitor-card.js`: il popup Info (markdown) ora
+  applica lo stesso escaping usato altrove nella card, per coerenza
+  difensiva (non sfruttabile oggi — la card markdown di HA sanitizza già).
+- Micro-ottimizzazione: `build_eids()` calcolato una sola volta per entità
+  invece che ad ogni lettura degli attributi.
+
+### Non incluso in questa release
+- La duplicazione di logica (rollover, split fotovoltaico, formattazione
+  durata) tra i 3 coordinator NON è stata estratta in un helper condiviso
+  — per scelta esplicita, per limitare la superficie di rischio di questa
+  release ai fix mirati. Resta un miglioramento strutturale valido per il
+  futuro.
+- È emerso durante il fix di `fv_exclude` che il relativo campo di
+  configurazione (`CONF_FV_EXCLUDE`) non è mai stato esposto nella UI del
+  config_flow per NESSUN tipo di device (non solo irrigazione) — il flag
+  esiste ed è ora rispettato a livello di coordinator, ma resta
+  raggiungibile solo tramite `import_config`/modifica manuale dello
+  storage. Aggiungere il relativo controllo nel wizard è un miglioramento
+  separato, non incluso qui.
+
 ## [6.3.1] - 2026-09-09
 
 ### Changed — nessuna modifica al codice dell'integrazione, solo ai test

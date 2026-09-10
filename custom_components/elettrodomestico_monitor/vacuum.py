@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    vacuum.py
-# VERSION: 5.7.25
+# VERSION: 5.7.26
 # DESC:    Vacuum platform — vacuum wrapper entity for vacuum preset devices
 # CHANGED: 2026-06-11
 # ============================================================
@@ -34,6 +34,7 @@ from .const import (
     ENTRY_TYPE_HUB, CONF_ENTRY_TYPE, CONF_PRESET,
 )
 from .coordinator import ElettrodomesticoCoordinator
+from .naming import entity_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -174,7 +175,10 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
         The threshold is read live from the number entity (editable from the
         card), falling back to the value stored at setup."""
         pct = self._return_pct
-        num_st = self.hass.states.get(f"number.soglia_rientro_vacuum_x{self._slot}")
+        # FIX (audit v7.0.0, minore): entity_id costruito a mano invece di
+        # passare da naming.py — reintroduceva la classe di bug (concatenazione
+        # manuale di stringhe) che quel modulo esiste per eliminare.
+        num_st = self.hass.states.get(entity_id("number", "soglia_rientro_vacuum", self._slot))
         if num_st and num_st.state not in ("unknown", "unavailable", ""):
             try:
                 pct = int(float(num_st.state))

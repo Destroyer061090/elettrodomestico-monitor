@@ -1,6 +1,6 @@
 # DESC: Centralized multi-channel notification sender, shared by all coordinators.
 #       Eliminates the previously-duplicated push/whatsapp/alexa/google logic.
-# VERSION: 5.7.0
+# VERSION: 5.7.1
 # CHANGED: 2026-06-11 (data storica ricostruita — campo assente nell'header
 #          originale prima dell'audit v6.1.0)
 """Shared notification helper.
@@ -47,6 +47,15 @@ def in_notify_window(hub: dict[str, Any], now=None) -> bool:
         return True
     start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    # FIX (audit v7.0.0 — CRITICO): con una finestra che attraversa la
+    # mezzanotte (es. 22:00 -> 06:00), 'start' (ancorato a oggi) è sempre
+    # maggiore di 'end' (ancorato a oggi), quindi "start <= now <= end" era
+    # sempre falso: le notifiche vocali restavano disattivate 24/7 senza
+    # alcun errore in log. Se end < start, la finestra si considera "fuori
+    # dall'intervallo [end, start)" anziché "dentro [start, end]". Vedi
+    # CHANGELOG.md.
+    if end < start:
+        return now >= start or now <= end
     return start <= now <= end
 
 
@@ -119,9 +128,23 @@ async def async_send_notification(
 
     if whatsapp and hub.get("whatsapp_entity"):
         try:
+            # FIX (audit v7.0.0, medio): input_text ha un limite 'max'
+            # (default HA 100, massimo 255). Senza troncamento, un messaggio
+            # più lungo faceva fallire set_value con vol.Invalid, catturato
+            # sotto e solo loggato — la notifica WhatsApp spariva senza
+            # alcun segnale visibile. Ora tronchiamo al limite dichiarato
+            # dall'entità (se disponibile) prima di inviare.
+            wa_value = message
+            st = hass.states.get(hub["whatsapp_entity"])
+            max_len = st.attributes.get("max") if st else None
+            if isinstance(max_len, (int, float)) and max_len > 0 and len(wa_value) > max_len:
+                _LOGGER.debug(
+                    "[%s] whatsapp message troncato da %d a %d caratteri (limite input_text)",
+                    log_id, len(wa_value), int(max_len))
+                wa_value = wa_value[:int(max_len)]
             await hass.services.async_call(
                 "input_text", "set_value",
-                {"entity_id": hub["whatsapp_entity"], "value": message})
+                {"entity_id": hub["whatsapp_entity"], "value": wa_value})
         except Exception as ex:  # noqa: BLE001
             _LOGGER.warning("[%s] whatsapp failed: %s", log_id, ex)
 

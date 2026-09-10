@@ -36,6 +36,8 @@ from custom_components.elettrodomestico_monitor.const import (
 )
 from custom_components.elettrodomestico_monitor.migration import (
     _APPLIANCE_DEFAULTS,
+    _SCHEMA_KEY,
+    _SCHEMA_VERSION,
     async_migrate_entry,
 )
 from custom_components.elettrodomestico_monitor.presets import (
@@ -84,14 +86,16 @@ async def test_missing_keys_are_filled_with_defaults(hass):
 
 
 async def test_complete_entry_is_not_updated(hass):
-    """Se l'entry ha già tutte le chiavi, async_update_entry non deve
-    essere chiamato (nessuna scrittura inutile su disco ad ogni riavvio)."""
+    """Se l'entry ha già tutte le chiavi E il marcatore di schema è già
+    alla versione corrente, async_update_entry non deve essere chiamato
+    (nessuna scrittura inutile su disco ad ogni riavvio)."""
     complete_data = {
         CONF_ENTRY_TYPE: ENTRY_TYPE_APPLIANCE,
         CONF_APPLIANCE_NAME: "Lavatrice",
         CONF_SLOT: "1",
         CONF_PRESET: "elettrodomestico",
         **_APPLIANCE_DEFAULTS,
+        _SCHEMA_KEY: _SCHEMA_VERSION,
     }
     entry = _make_entry(hass, complete_data)
 
@@ -102,6 +106,32 @@ async def test_complete_entry_is_not_updated(hass):
 
     assert result is True
     assert calls == []  # nessun update_entry chiamato: niente era cambiato
+
+
+async def test_schema_marker_is_written_once_for_pre_marker_entries(hass):
+    """FIX (audit v7.0.0, medio): un'entry creata prima dell'introduzione
+    del marcatore di schema (_SCHEMA_KEY) non ce l'ha — la prima
+    migrazione dopo l'aggiornamento deve scriverlo esattamente una volta
+    (anche se l'entry ha già tutte le altre chiavi), non ad ogni riavvio."""
+    complete_data_no_marker = {
+        CONF_ENTRY_TYPE: ENTRY_TYPE_APPLIANCE,
+        CONF_APPLIANCE_NAME: "Lavatrice",
+        CONF_SLOT: "1",
+        CONF_PRESET: "elettrodomestico",
+        **_APPLIANCE_DEFAULTS,
+    }
+    entry = _make_entry(hass, complete_data_no_marker)
+
+    result = await async_migrate_entry(hass, entry)
+    assert result is True
+    assert entry.data[_SCHEMA_KEY] == _SCHEMA_VERSION
+
+    # Una seconda migrazione (riavvio successivo) non deve scrivere di nuovo.
+    calls = []
+    hass.config_entries.async_update_entry = lambda e, **kw: calls.append(kw)
+    result = await async_migrate_entry(hass, entry)
+    assert result is True
+    assert calls == []
 
 
 async def test_vacuum_entity_autopopulated_from_trigger(hass):

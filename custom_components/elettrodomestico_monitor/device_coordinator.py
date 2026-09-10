@@ -1,4 +1,4 @@
-# VERSION: 5.7.1
+# VERSION: 5.7.2
 # CHANGED: 2026-07-23 (v6.2.3: guardia contro soglie avvio/stop invertite o
 #          coincidenti — causavano toggling continuo, confermato con
 #          esecuzione reale. Vedi CHANGELOG.md)
@@ -10,8 +10,9 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -73,7 +74,6 @@ class DeviceCoordinator(DataUpdateCoordinator):
         self._battery_pct: float | None = None
         self._charging: bool = False
         self._last_change_ts: float = dt_util.utcnow().timestamp()
-        self._last_midnight_day = dt_util.now().day
 
         # Counters
         self._c_today = self._c_month = self._c_year = 0
@@ -87,6 +87,23 @@ class DeviceCoordinator(DataUpdateCoordinator):
         self._c_year  = d.get("dev_c_year", 0)
         self._c_total = d.get("dev_c_total", 0)
         self._last_change_ts = d.get("dev_last_change_ts", dt_util.utcnow().timestamp())
+
+        # FIX (audit v7.0.0 — alto): il rollover era guidato da un confronto
+        # in-memory del giorno (self._last_midnight_day), inizializzato al
+        # giorno corrente ad ogni creazione del coordinator. Un riavvio di HA
+        # a cavallo della mezzanotte faceva perdere silenziosamente quel
+        # rollover — "oggi" continuava ad accumularsi sopra il totale del
+        # giorno precedente (e, se il riavvio cadeva il giorno 1, anche il
+        # rollover mensile/annuale). Allineato a coordinator.py e
+        # irrigation_coordinator.py: callback pianificata a 23:59:59,
+        # indipendente da quando/se il coordinator è stato ricreato.
+        unsub = async_track_time_change(
+            self.hass, self._on_midnight, hour=23, minute=59, second=59)
+        self.entry.async_on_unload(unsub)
+
+    @callback
+    def _on_midnight(self, now):
+        self.hass.async_create_task(self._rollover(now))
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _start_pct(self) -> float:
@@ -113,8 +130,14 @@ class DeviceCoordinator(DataUpdateCoordinator):
         if not self._battery_sensor: return None
         st = self.hass.states.get(self._battery_sensor)
         if not st or st.state in ("unknown","unavailable",""): return None
-        try: return float(st.state)
-        except (ValueError, TypeError): return None
+        try:
+            pct = float(st.state)
+        except (ValueError, TypeError):
+            return None
+        # FIX (audit v7.0.0, minore): un sensore mal configurato/glitchato
+        # che riporta valori fuori 0-100 veniva confrontato direttamente
+        # con le soglie di avvio/stop senza alcun limite di sanità.
+        return max(0.0, min(100.0, pct))
 
     def _read_charging(self) -> bool:
         if not self._charge_switch: return False
@@ -154,12 +177,6 @@ class DeviceCoordinator(DataUpdateCoordinator):
 
     # ── main update ────────────────────────────────────────────────────────────
     async def _async_update_data(self) -> dict[str, Any]:
-        # Midnight rollover
-        now = dt_util.now()
-        if now.day != self._last_midnight_day:
-            await self._rollover(now)
-            self._last_midnight_day = now.day
-
         prev_charging = self._charging
         self._battery_pct = self._read_battery()
         # On the very first update, sync the logical state from the plug so we
@@ -229,7 +246,11 @@ class DeviceCoordinator(DataUpdateCoordinator):
             d.set("dev_c_last_month", self._c_month); self._c_month = 0
         if now.month == 1 and now.day == 1:
             d.set("dev_c_last_year", self._c_year); self._c_year = 0
-        await self._persist(); await self.storage.async_save()
+        # FIX (audit v7.0.0, minore): _persist() termina già con
+        # storage.async_save() — il secondo async_save() qui sotto era un
+        # doppio salvataggio su disco ridondante ad ogni rollover.
+        await self._persist()
+        self.async_set_updated_data(self._build())
 
     async def _persist(self):
         d = self.storage

@@ -1244,10 +1244,17 @@ class ElettrodomesticoMonitorCard extends HTMLElement {
     const upd   = this._s('sensor.aggiornamento_elettrodomestici_hub', '—');
     const maint = this._a(infoMastId, 'manutenzione', '—');
     const rst   = this._a(infoMastId, 'ultimo_reset', '—');
+    // FIX (audit v7.0.0, minore): questi valori arrivano da attributi
+    // sensore (versione/manutenzione/ultimo_reset) senza passare da
+    // _esc() come il resto della card — non sfruttabile oggi (la card
+    // markdown di HA applica il proprio sanitizzatore) ma incoerente con
+    // la disciplina di escaping usata altrove nel file. Applicata per
+    // difesa in profondità e coerenza.
+    const _e = ElettrodomesticoMonitorCard._esc;
     this._popup('Info', {
       type: 'markdown',
       card_mod: { style: 'ha-card{background:var(--card-background-color);color:var(--primary-text-color)!important;}ha-markdown,.markdown-body{color:var(--primary-text-color)!important;}' },
-      content: `## Elettrodomestico Monitor\n\n**Versione:** ${ver}\n\n**Aggiornamento:** ${upd}\n\n**Manutenzione:** ${maint}\n\n**Ultimo reset:** ${rst}`,
+      content: `## Elettrodomestico Monitor\n\n**Versione:** ${_e(ver)}\n\n**Aggiornamento:** ${_e(upd)}\n\n**Manutenzione:** ${_e(maint)}\n\n**Ultimo reset:** ${_e(rst)}`,
     });
   }
 

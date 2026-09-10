@@ -14,6 +14,7 @@
           "vendita_kwh_sensor": "☀️ Dynamic €/kWh sale sensor (overrides the fixed value)",
           "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
           "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_invert": "🌞 PHOTOVOLTAIC — Invert grid sensor sign (if your sensor uses + for export)",
           "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
         },
         "description": "For each resource: enter a fixed value OR select a dynamic sensor (e.g. from your provider). The sensor takes priority over the fixed value."
@@ -50,6 +51,7 @@
           "device_icon": "Icon",
           "vacuum_entity": "Vacuum entity (required — e.g. vacuum.roomba)",
           "battery_sensor": "Battery % sensor (optional — e.g. sensor.roomba_battery)",
+          "vacuum_return_pct": "Minimum battery % to return to base (0 = disabled)",
           "trigger_delay_m": "Cycle-end detection delay (minutes)",
           "custom_message": "End-of-cleaning notification message",
           "notify_push": "Enable Push notification",
@@ -144,7 +146,10 @@
       "entity_in_use": "This entity is already assigned to another configured device."
     },
     "abort": {
-      "hub_only_selected": "Hub configured. Add devices via 'Add Integration' → Elettrodomestico Monitor."
+      "hub_only_selected": "Hub configured. Add devices via 'Add Integration' → Elettrodomestico Monitor.",
+      "slot_taken": "Import aborted: the slot in the file is already used by another device.",
+      "slot_invalid": "Import aborted: missing or invalid slot in the import file.",
+      "hub_already_exists": "A Global Hub is already configured (or being created by another flow)."
     }
   },
   "options": {
@@ -162,6 +167,7 @@
           "vendita_kwh_sensor": "☀️ SOLAR SALE — or dynamic sensor €/kWh (takes priority)",
           "fv_enabled": "🌞 PHOTOVOLTAIC — Enable self-consumption split (grid cost vs solar saving)",
           "fv_grid_sensor": "🌞 PHOTOVOLTAIC — Grid power sensor (+ import / − export)",
+          "fv_invert": "🌞 PHOTOVOLTAIC — Invert grid sensor sign (if your sensor uses + for export)",
           "fv_threshold_w": "🌞 PHOTOVOLTAIC — Threshold W to ignore noise (0 = none)"
         },
         "description": "For each resource: set the fixed value OR select a sensor (sensor takes priority). At the bottom, Photovoltaic splits consumption between grid (cost) and solar (saving)."
@@ -181,6 +187,7 @@
           "switch_entity": "Physical switch (optional)",
           "trigger_entity": "External trigger entity (optional)",
           "vacuum_entity": "Vacuum entity",
+          "vacuum_return_pct": "Minimum battery % to return to base (0 = disabled)",
           "battery_sensor": "Battery % sensor (optional)",
           "source_unit": "Source unit",
           "total_unit": "Total unit",
@@ -195,8 +202,23 @@
           "image_on": "ON state image",
           "image_off": "OFF state image",
           "power_sensor_2": "Pump power sensor (kWh)",
-          "power_share": "Sensor share (1.0 = 100% | 0.25 = 25% if shared)"
+          "power_share": "Sensor share (1.0 = 100% | 0.25 = 25% if shared)",
+          "dev_battery_sensor": "🔋 Battery % sensor (required)",
+          "dev_charge_switch": "🔌 Charging plug switch (optional)",
+          "dev_start_pct": "Start charge % (below → charge)",
+          "dev_stop_pct": "Stop charge % (above → stop)",
+          "flow_sensor": "Flow Sensor (L/min)",
+          "pump_sensor": "Pump Power Sensor (W)",
+          "meteo_entity": "Weather Sensor (skip if raining)",
+          "s1_time": "Schedule 1",
+          "s2_time": "Schedule 2",
+          "s3_time": "Schedule 3"
         }
+      },
+      "irr_zones": {
+        "title": "Configure Zones",
+        "description": "Set name, switch and duration (minutes) for each of the {num_zones} zones.",
+        "data": {}
       },
       "advanced": {
         "title": "Custom Schedule",

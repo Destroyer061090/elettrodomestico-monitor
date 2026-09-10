@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.7.25
+# VERSION: 5.7.26
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
 # CHANGED: 2026-09-09 (v6.2.9: aggiunto CONFIG_SCHEMA — richiesto da hassfest
 #          per integrazioni che implementano async_setup; fix lint 'ex' non
@@ -66,23 +66,27 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             cache_headers=True,
         ),
     ]
-    # Filter out paths that might already be registered
-    to_register = []
-    for p in paths:
-        try:
-            to_register.append(p)
-        except Exception:
-            pass
+    # FIX (audit v7.0.0, minore): il try/except attorno al semplice
+    # list.append() qui sotto non poteva mai fallire nella pratica — era
+    # codice morto che dava una falsa impressione di gestione errori.
+    # Rimosso; il fallback che conta davvero è quello sulla registrazione
+    # vera e propria subito sotto.
+    to_register = list(paths)
     try:
         await hass.http.async_register_static_paths(to_register)
         _LOGGER.debug("Static paths registered for %s", DOMAIN)
-    except Exception:
-        # Some paths may already be registered — try one by one
+    except Exception as ex:
+        # Some paths may already be registered — try one by one instead of
+        # failing the whole batch, but log each failure (FIX audit v7.0.0,
+        # minore: prima era un `except Exception: pass` silenzioso — un
+        # fallimento reale qui era indistinguibile da un percorso già
+        # registrato, rendendo impossibile diagnosticarlo).
+        _LOGGER.debug("[EM] Static path batch registration failed (%s), retrying one by one", ex)
         for p in to_register:
             try:
                 await hass.http.async_register_static_paths([p])
-            except Exception:
-                pass
+            except Exception as ex2:
+                _LOGGER.debug("[EM] Static path '%s' not registered: %s", p.url_path, ex2)
 
     # ── Auto-register Lovelace resource (scheduled after setup) ─────────────
     hass.async_create_task(_async_register_lovelace_resource(hass))
@@ -155,8 +159,12 @@ async def _register_one_resource(hass: HomeAssistant, card_file: str, VERSION: s
 
     try:
         await resource_collection.async_load()
-    except Exception:
-        pass
+    except Exception as ex:
+        # FIX (audit v7.0.0, minore): era un `except Exception: pass`
+        # silenzioso — un fallimento reale di async_load() qui era
+        # indistinguibile da un caricamento riuscito, rendendo impossibile
+        # diagnosticarlo. Resta non bloccante (funzionalità best-effort).
+        _LOGGER.debug("[EM] Lovelace resource_collection.async_load() failed: %s", ex)
 
     existing = list(resource_collection.async_items())
     current_ok = False
@@ -298,10 +306,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return ok
 
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
-        await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR, Platform.SWITCH, Platform.BUTTON])
-        hass.data[DOMAIN].pop("hub_entry_id", None)
-        if not _hub_exists(hass): hass.data[DOMAIN].pop("update_coordinator", None)
-        return True
+        # FIX (audit v7.0.0, minore): a differenza dei rami Device/Irrigation/
+        # Appliance, che condizionano il cleanup all'esito di
+        # async_unload_platforms, questo ramo puliva hass.data e restituiva
+        # sempre True incondizionatamente, anche se lo scaricamento delle
+        # piattaforme falliva.
+        ok = await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR, Platform.SWITCH, Platform.BUTTON])
+        if ok:
+            hass.data[DOMAIN].pop("hub_entry_id", None)
+            if not _hub_exists(hass): hass.data[DOMAIN].pop("update_coordinator", None)
+        return ok
     coord = hass.data[DOMAIN].get(entry.entry_id)
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok and coord:

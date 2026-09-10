@@ -1,7 +1,12 @@
 # ============================================================
 # FILE:    sensor.py
-# VERSION: 5.8.13
+# VERSION: 5.8.15
 # DESC:    Sensor platform — all sensors including irrigation sensors
+# CHANGED: 2026-09-10 (v7.0.1: i sensori di costo in € — _CostoPeriod,
+#          _RisparmioSole, _CostoRete, _IrrCosto — NON possono essere
+#          total_increasing: device_class monetary lo vieta e il valore
+#          (accumulo × tariffa dinamica) non è garantito monotono.
+#          Riportati a state_class None. Vedi CHANGELOG.md.)
 # CHANGED: 2026-09-09 (v6.2.9: fix lint — variabili 'icon'/'day_en' non usate,
 #          zip() semplificato. Vedi CHANGELOG.md)
 # CHANGED: 2026-08-30 (v6.2.6: lo stato del sensore aggiornamento include ora
@@ -204,7 +209,13 @@ async def _async_setup_irrigation_sensors(
             self._key = f"litri_{sfx_it}"
             self._attr_name = f"{lbl} {name}"
             self._attr_native_unit_of_measurement = "L"
-            self._attr_state_class = SensorStateClass.TOTAL
+            # FIX (audit v7.0.0): era TOTAL — questi contatori vengono azzerati
+            # a mezzanotte/inizio mese/anno da irrigation_coordinator._midnight(),
+            # e TOTAL fa interpretare ogni calo come dato reale (es. immissione
+            # in rete), generando un picco negativo fittizio nelle Statistiche a
+            # lungo termine. TOTAL_INCREASING fa riconoscere il calo come reset
+            # del contatore. Vedi CHANGELOG.md.
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
             self._attr_device_class = SensorDeviceClass.WATER
             self._attr_icon = "mdi:water"
         @property
@@ -216,7 +227,9 @@ async def _async_setup_irrigation_sensors(
             super().__init__(f"irrigazione_cicli_{sfx_it}")
             self._key = f"c_{period}"
             self._attr_name = f"Cicli {lbl} {name}"
-            self._attr_state_class = SensorStateClass.TOTAL
+            # FIX (audit v7.0.0): vedi nota in _LitreSensor — si azzera ad
+            # ogni rollover periodico, serve TOTAL_INCREASING non TOTAL.
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
             self._attr_icon = "mdi:counter"
         @property
         def native_value(self): return self._d.get(self._key, 0)
@@ -242,7 +255,16 @@ async def _async_setup_irrigation_sensors(
             }[kind]
             self._attr_name = f"Costo {lbl} {sfx_it} {name}"
             self._attr_native_unit_of_measurement = "€"
-            self._attr_state_class = SensorStateClass.TOTAL
+            # FIX: era stato messo a TOTAL_INCREASING insieme ai sensori
+            # fisici (litri/kWh), ma questo è un costo in € = accumulo ×
+            # tariffa (anche l'acqua/kwh, non solo "rete"/"sole", leggono
+            # una tariffa dal Hub che può essere dinamica). HA vieta
+            # comunque TOTAL_INCREASING per device_class MONETARY
+            # ("expected None or one of 'total'"), e anche 'total' andrebbe
+            # in errore a runtime perché il valore non è garantito
+            # monotono. Senza state_class il sensore resta corretto,
+            # solo escluso dalle Statistiche a lungo termine.
+            self._attr_state_class = None
             self._attr_device_class = SensorDeviceClass.MONETARY
             self._attr_icon = "mdi:currency-eur"
         @property
@@ -269,6 +291,8 @@ async def _async_setup_irrigation_sensors(
         """Master sensor with all attributes for 7 days and stats."""
         def __init__(self):
             super().__init__("irrigazione_time_on")
+            # FIX (audit v7.0.0, minore): eids statico per slot, calcolato una sola volta.
+            self._eids = build_eids(slot, irrigation=True)
             self._attr_name = f"Statistiche {name}"
             self._attr_native_unit_of_measurement = "h"
             self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -325,7 +349,7 @@ async def _async_setup_irrigation_sensors(
                 "risparmio_sole_mese_prec": d.get("risparmio_sole_mese_prec", 0.0),
                 "risparmio_sole_anno_prec": d.get("risparmio_sole_anno_prec", 0.0),
                 "statistiche_settimanali": d.get("weekly", {}),
-                "eids":            build_eids(slot, irrigation=True),
+                "eids":            self._eids,
                 "l_ieri":          d.get("l_yesterday", 0.0),
                 "kwh_ieri":        d.get("kwh_yesterday", 0.0),
                 "tempo_ieri":      d.get("t_yesterday_str", "0min"),
@@ -360,7 +384,9 @@ async def _async_setup_irrigation_sensors(
             self._key = f"kwh_{period}"
             self._attr_name = f"{lbl} {name}"
             self._attr_native_unit_of_measurement = "kWh"
-            self._attr_state_class = SensorStateClass.TOTAL
+            # FIX (audit v7.0.0): vedi nota in _LitreSensor — si azzera ad
+            # ogni rollover periodico, serve TOTAL_INCREASING non TOTAL.
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
             self._attr_device_class = SensorDeviceClass.ENERGY
             self._attr_icon = "mdi:lightning-bolt"
         @property
@@ -543,7 +569,10 @@ class _DevCicli(_DevBase):
         self._dk = dk
         self._attr_name = f"Cicli Ricarica {name} {period.capitalize()}"
         self._attr_native_unit_of_measurement = "cicli"
-        self._attr_state_class = SensorStateClass.TOTAL if period != "totali" else SensorStateClass.TOTAL_INCREASING
+        # FIX (audit v7.0.0): anche oggi/mese/anno si azzerano ai rollover
+        # periodici (non solo "totali"), serve TOTAL_INCREASING sempre —
+        # vedi nota in _AccTotal.
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:battery-sync"
     @property
     def native_value(self): return self._d.get(self._dk, 0)
@@ -610,7 +639,12 @@ class _AccTotal(_Base):
         self._attr_name = f"{lbl} Totale {n}"
         self._attr_native_unit_of_measurement = total_unit
         self._attr_device_class = dc
-        self._attr_state_class  = SensorStateClass.TOTAL
+        # FIX (audit v7.0.0): era TOTAL — azzerato dal pulsante "Reset
+        # Contatori" (coordinator.async_reset_all()); TOTAL_INCREASING fa
+        # riconoscere il calo come reset del contatore invece di un dato
+        # reale, evitando un picco negativo fittizio nelle Statistiche a
+        # lungo termine. Vedi CHANGELOG.md.
+        self._attr_state_class  = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:lightning-bolt" if total_unit == "kWh" else "mdi:water" if total_unit == "L" else "mdi:gauge"
 
     @property
@@ -625,7 +659,8 @@ class _VolumeM3(_Base):
         self._attr_name = f"Volume m³ {n}"
         self._attr_native_unit_of_measurement = "m³"
         self._attr_device_class = SensorDeviceClass.WATER if preset.device_class == "water" else SensorDeviceClass.GAS
-        self._attr_state_class  = SensorStateClass.TOTAL
+        # FIX (audit v7.0.0): vedi nota in _AccTotal — azzerato dal reset.
+        self._attr_state_class  = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:water-outline"
 
     @property
@@ -643,7 +678,9 @@ class _EnergyPeriod(_Base):
         self._attr_name = f"{lbl} {n} {period.capitalize()}"
         self._attr_native_unit_of_measurement = total_unit
         self._attr_device_class = dc
-        self._attr_state_class  = SensorStateClass.TOTAL
+        # FIX (audit v7.0.0): si azzera a mezzanotte/mese/anno via
+        # coordinator._midnight() — vedi nota in _AccTotal.
+        self._attr_state_class  = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:lightning-bolt-circle"
 
     @property
@@ -667,7 +704,8 @@ class _CicliPeriod(_Base):
         self._dk, self._lk = dk, lk
         self._attr_name = f"Cicli {n} {period.capitalize()}"
         self._attr_native_unit_of_measurement = "cicli"
-        self._attr_state_class = SensorStateClass.TOTAL
+        # FIX (audit v7.0.0): si azzera a mezzanotte/mese/anno — vedi nota in _AccTotal.
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:counter"
 
     @property
@@ -715,7 +753,20 @@ class _CostoPeriod(_Base):
         self._dk, self._lk = dk, lk
         self._attr_name = f"{lbl} {n} {period.capitalize()}"
         self._attr_native_unit_of_measurement = "€"
-        self._attr_state_class = SensorStateClass.TOTAL
+        # FIX (audit v7.0.0, poi corretto dopo segnalazione utente su HA
+        # reale): NON può essere TOTAL_INCREASING. Questo valore è
+        # accumulo_fisico × tariffa — con una tariffa DINAMICA (sensore
+        # €/kWh live) il costo può scendere anche senza alcun reset di
+        # periodo (es. il prezzo cala tra un update e l'altro), violando
+        # l'assunzione di monotonicità di TOTAL_INCREASING. HA lo rileva a
+        # runtime ("state is not strictly increasing") e tratta ogni calo
+        # come un falso reset, corrompendo le Statistiche a lungo termine
+        # in un altro modo. Senza state_class il sensore resta corretto e
+        # cliccabile nella cronologia normale, solo escluso dalle
+        # Statistiche a lungo termine (che per un valore non garantito
+        # monotono non sono comunque rappresentabili in modo affidabile —
+        # vedi developers.home-assistant.io/docs/core/entity/sensor).
+        self._attr_state_class = None
         self._attr_icon = "mdi:cash-plus" if not self._d.get("inverted_cost") else "mdi:solar-power"
 
     @property
@@ -729,7 +780,9 @@ class _RisparmioSole(_Base):
         self._dk = dk
         self._attr_name = f"Risparmio Sole {n} {period.capitalize()}"
         self._attr_native_unit_of_measurement = "€"
-        self._attr_state_class = SensorStateClass.TOTAL
+        # FIX: costo in € derivato da accumulo × tariffa (può essere
+        # dinamica) — non garantito monotono, vedi nota in _CostoPeriod.
+        self._attr_state_class = None
         self._attr_icon = "mdi:solar-power-variant"
 
     @property
@@ -751,7 +804,12 @@ class _CostoRete(_Base):
         self._dk = dk
         self._attr_name = f"Costo Rete {n} {period.capitalize()}"
         self._attr_native_unit_of_measurement = "€"
-        self._attr_state_class = SensorStateClass.TOTAL
+        # FIX: device_class MONETARY non ammette comunque
+        # TOTAL_INCREASING lato HA ("expected None or one of 'total'") —
+        # ed è anche derivato da accumulo × tariffa (può essere dinamica),
+        # quindi non garantito monotono neanche con 'total'. Vedi nota in
+        # _CostoPeriod.
+        self._attr_state_class = None
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_icon = "mdi:transmission-tower"
 
@@ -885,6 +943,10 @@ class _Master(_Base):
     def __init__(self, c, e, n, s):
         super().__init__(c, e, n, s, SFX_MASTER)
         self._slot_val = s
+        # FIX (audit v7.0.0, minore): build_eids() è statico per slot — lo
+        # calcoliamo una sola volta invece di rifarlo ad ogni lettura di
+        # extra_state_attributes (ogni scrittura di stato, ~20s/device).
+        self._eids = build_eids(s)
         self._attr_name = f"Time On {n}"
         self._attr_native_unit_of_measurement = "h"
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -954,7 +1016,7 @@ class _Master(_Base):
             "risparmio_sole_ieri":      d.get("risparmio_sole_ieri",      0.0),
             "risparmio_sole_mese_prec": d.get("risparmio_sole_mese_prec", 0.0),
             "risparmio_sole_anno_prec": d.get("risparmio_sole_anno_prec", 0.0),
-            "eids":                  build_eids(self._slot_val),
+            "eids":                  self._eids,
         }
 
 
@@ -1035,12 +1097,15 @@ class _VacuumBattery(_Base):
 
     @property
     def native_value(self):
-        # Always return a value for vacuum preset; None = unknown (shown as unavailable by HA)
-        # but we return 0 as fallback so the entity stays visible
+        # Always return a value for vacuum preset; we return 0 as fallback
+        # so the entity stays visible with a known state instead of "unknown"
+        # (FIX audit v7.0.0: il vecchio "val if val is not None else None"
+        # non faceva nulla — il fallback a 0 promesso dal commento non era
+        # mai applicato).
         if not self._d.get("is_vacuum", False):
             return None
         val = self._d.get("vacuum_battery")
-        return val if val is not None else None
+        return val if val is not None else 0
 
     @property
     def available(self) -> bool:

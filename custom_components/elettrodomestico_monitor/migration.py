@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    migration.py
-# VERSION: 5.1.0
+# VERSION: 5.2.0
 # DESC:    Migration — config entry version upgrades
 # CHANGED: 2026-07-20 (v6.1.0: rimosso blocco duplicato/irraggiungibile dopo il
 #          return della funzione — vedi CHANGELOG.md)
@@ -36,6 +36,19 @@ from .const import (
 from .presets import get_preset, PRESET_VACUUM, PRESET_CLIMA
 
 _LOGGER = logging.getLogger(__name__)
+
+# FIX (audit v7.0.0, medio): questo modulo non teneva traccia di NESSUNA
+# versione — né leggeva/incrementava ConfigEntry.version, né salvava un
+# proprio marcatore. Le sole aggiunte di chiavi mancanti sono
+# sicure/idempotenti da rieseguire ad ogni avvio, ma una futura migrazione
+# che debba TRASFORMARE una chiave esistente (non solo aggiungerne una
+# nuova), o che debba girare una sola volta, non aveva nessuna base su cui
+# appoggiarsi. Aggiunto un marcatore di schema esplicito in entry.data:
+# ogni passo di migrazione futuro può controllare
+# "data.get(_SCHEMA_KEY, 0) < N" prima di applicarsi, invece di dover
+# essere scritto in modo da restare sicuro se rieseguito ad ogni riavvio.
+_SCHEMA_KEY     = "_migration_schema_version"
+_SCHEMA_VERSION = 1
 
 # Safe imports for fields added in newer versions
 try:
@@ -138,7 +151,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     name, slot, trigger
                 )
 
-        # ── 5. Apply changes if needed ──────────────────────────────────────
+        # ── 5. Record the schema version this entry has been migrated to ───
+        # Future version-gated migration steps go here, e.g.:
+        #   if data.get(_SCHEMA_KEY, 0) < 2:
+        #       ... one-time transform ...
+        #       changed = True
+        if data.get(_SCHEMA_KEY) != _SCHEMA_VERSION:
+            data[_SCHEMA_KEY] = _SCHEMA_VERSION
+            changed = True
+
+        # ── 6. Apply changes if needed ──────────────────────────────────────
         if changed:
             hass.config_entries.async_update_entry(entry, data=data)
             _LOGGER.info(

@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    coordinator.py
-# VERSION: 6.0.7
+# VERSION: 6.0.8
 # DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
 # CHANGED: 2026-07-28 (v6.2.4: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo.
@@ -34,7 +34,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    VACUUM_ACTIVE_STATES, VACUUM_INACTIVE_STATES,
+    VACUUM_INACTIVE_STATES,
     DOMAIN, VERSION, COORDINATOR_UPDATE_INTERVAL,
     CONF_POWER_SENSOR, CONF_SWITCH_ENTITY, CONF_TRIGGER_ENTITY, CONF_POWER_MULTIPLIER,
     CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR,
@@ -243,9 +243,34 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             return self._num(SFX_NUM_SOGLIA, float(self.config.get(CONF_WORK_THRESHOLD_W, 0.1)))
         return self._num(SFX_NUM_SOGLIA, float(self.config.get(CONF_WORK_THRESHOLD_W, DEFAULT_THRESHOLD_W)))
 
+    # FIX (audit v7.0.0, alto): unavailable/unknown sul trigger entity
+    # (tipico durante un'interruzione della connessione cloud — Tuya/
+    # Xiaomi/Mitsubishi ecc.) veniva trattato esattamente come un vero
+    # "off", chiudendo il ciclo dopo il solo _delay_off_s configurato
+    # (default 60s) e spezzando un'unica accensione fisica continua in più
+    # cicli quando la connessione tornava. Per la sola perdita di
+    # connettività usiamo una grazia più lunga prima di chiudere il ciclo.
+    _TRIGGER_UNAVAILABLE_GRACE_S = 300
+
     @property
     def _delay_off_s(self):
         return int(self._num(SFX_NUM_DELAY_OFF, float(self.config.get(CONF_TRIGGER_DELAY_M, DEFAULT_TRIGGER_DELAY_M))) * 60)
+
+    def _handle_trigger_inactive(self, raw_state: str | None) -> None:
+        """Schedule (or immediately perform) ending the cycle, debounced.
+
+        Shared by the state-change listener (_on_trigger_entity) and the
+        polling fallback in _async_update_data, so a connectivity loss is
+        handled the same way regardless of which path observes it first.
+        """
+        if self._ac_pending_off is not None:
+            return  # already scheduled — the first grace period decides
+        is_conn_loss = raw_state in (None, STATE_UNAVAILABLE, STATE_UNKNOWN, "")
+        d = self._TRIGGER_UNAVAILABLE_GRACE_S if is_conn_loss else self._delay_off_s
+        if d:
+            self._ac_pending_off = async_call_later(self.hass, d, lambda _: self._ac_off())
+        else:
+            self._ac_off()
 
     @property
     def _delay_on_s(self):
@@ -378,8 +403,19 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         self._tick_time()
         if self._use_trigger_entity:
             active = self._trigger_entity_active()
-            if active and not self._ac_state: self._ac_on()
-            elif not active and self._ac_state: self._ac_off()
+            if active and not self._ac_state:
+                if self._ac_pending_off: self._ac_pending_off(); self._ac_pending_off = None
+                self._ac_on()
+            elif not active and self._ac_state:
+                # FIX (audit v7.0.0, alto): questo poll (ogni
+                # COORDINATOR_UPDATE_INTERVAL) chiamava _ac_off()
+                # immediatamente, scavalcando di fatto il debounce di
+                # _on_trigger_entity — bastava un solo poll con
+                # l'entità trigger unavailable per chiudere il ciclo.
+                # Passa dallo stesso helper debounced e consapevole
+                # della perdita di connettività.
+                st = self.hass.states.get(self._trigger_entity)
+                self._handle_trigger_inactive(st.state if st else None)
         else:
             self._eval_ac()
         await self._persist()
@@ -558,10 +594,7 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             self._ac_on()
         elif not active and self._ac_state:
             if self._ac_pending_on: self._ac_pending_on(); self._ac_pending_on = None
-            d = self._delay_off_s
-            if self._ac_pending_off is None:
-                if d: self._ac_pending_off = async_call_later(self.hass, d, lambda _: self._ac_off())
-                else: self._ac_off()
+            self._handle_trigger_inactive(new.state)
         self._push_safe()
 
     # ── Integration ───────────────────────────────────────────────────────────
@@ -976,12 +1009,25 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
                 self._cycle_start_ts = now_ts
             tempo_ciclo = _fmt(elapsed_h); terminato = "In funzione"
             consumo_ciclo = max(0.0, round(self._acc_total - self._cycle_start_acc, 3))
+            # Ciclo ancora in corso: il costo "live" con la tariffa attuale è corretto qui.
+            costo_ciclo = round(consumo_ciclo*cf*cpp, 2) if self.preset.show_cost else 0.0
         else:
             tempo_ciclo=sd.get("cycle_last_duration","")
             terminato=sd.get("cycle_end_time","")
             consumo_ciclo=sd.get("cycle_last_consumption",0.0)
-
-        costo_ciclo=round(consumo_ciclo*cf*cpp,2) if self.preset.show_cost else 0.0
+            # FIX (audit v7.0.0, medio): _cycle_end() salva già il costo
+            # corretto in "cycle_last_cost" (storage.py), ma non veniva mai
+            # riletto — qui si ricalcolava sempre con cpp/cf CORRENTI,
+            # scartando il valore storico. Con una tariffa dinamica, il
+            # "costo dell'ultimo ciclo" mostrato continuava a cambiare anche
+            # dopo che il ciclo era già finito. Stessa classe di bug già
+            # corretta per le statistiche settimanali (vedi sotto), ora
+            # estesa anche qui. Il ricalcolo resta solo come fallback per
+            # dati salvati prima di questo fix.
+            costo_ciclo_storico = sd.get("cycle_last_cost")
+            if costo_ciclo_storico is None:
+                costo_ciclo_storico = consumo_ciclo*cf*cpp
+            costo_ciclo = round(float(costo_ciclo_storico), 2) if self.preset.show_cost else 0.0
 
         weekly={}
         for day in WEEK_DAYS:
@@ -1114,7 +1160,17 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
             if vac:
                 st = self.hass.states.get(vac)
-                if st: return st.state.lower() in VACUUM_ACTIVE_STATES
+                if st:
+                    # FIX (audit v7.0.0, medio): questa allowlist non stava al
+                    # passo con gli stati non standard dei robot cinesi
+                    # (smart_cleaning, zone_cleaning, spot_cleaning,
+                    # goto_target, ecc.), proprio il motivo per cui
+                    # _entity_is_active() usa una blocklist (vedi il suo
+                    # docstring). Uno stato non standard risultava "ciclo
+                    # attivo" per la contabilità ma "spento" nell'indicatore
+                    # main_on in UI. Allineato alla stessa blocklist.
+                    s = st.state.lower()
+                    return s not in ("unavailable", "unknown", "") and s not in VACUUM_INACTIVE_STATES
             return self._ac_state
         if self._is_clima:
             eid = self._trigger_entity

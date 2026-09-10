@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    services.py
-# VERSION: 5.7.1
+# VERSION: 5.7.2
 # DESC:    Services — export/import, reset, maintenance, irrigation start/stop
 # CHANGED: 2026-06-11
 # ============================================================
@@ -25,6 +25,25 @@ except ImportError:
 _LOGGER = logging.getLogger(__name__)
 
 
+async def _notify_unknown_entry(hass: HomeAssistant, service: str, entry_id: str) -> None:
+    """Surface an unknown entry_id visibly instead of a silent no-op.
+
+    FIX (audit v7.0.0, medio): reset_sensors/set_maintenance/irrigation_*
+    tornavano "successo" a chi chiamava il servizio (automazione/script)
+    anche con un entry_id inesistente — solo un warning in log, mai
+    visibile in UI, a differenza di export/import/remove_all che notificano
+    sempre l'errore.
+    """
+    await hass.services.async_call("persistent_notification", "create", {
+        "message": (f"⚠️ Servizio `{service}` non eseguito\n\n"
+                    f"Nessun device trovato con `entry_id`: `{entry_id}`\n\n"
+                    f"Il device è stato rimosso o ricreato? Controlla l'entry_id "
+                    f"usato nell'automazione/script."),
+        "title": "Elettrodomestico Monitor — entry_id non trovato",
+        "notification_id": f"em_unknown_entry_{service}",
+    })
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register all services. Safe to call multiple times."""
 
@@ -37,7 +56,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
         if coord:
             await coord.async_reset_counters()
         else:
+            # FIX (audit v7.0.0, medio): prima era un no-op silenzioso — il
+            # servizio riportava comunque "successo" a chi lo chiamava
+            # (automazione/script), che non aveva modo di accorgersi che
+            # l'entry_id non esisteva più (es. device rimosso e ricreato).
             _LOGGER.warning("[EM] reset_sensors: entry_id %s not found", eid)
+            await _notify_unknown_entry(hass, "reset_sensors", eid)
 
     # ── reset_all_sensors ─────────────────────────────────────────────────────
     # One-shot reset of every device's counters (hub excluded). Iterates all
@@ -81,6 +105,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             await coord.async_set_maintenance(note)
         else:
             _LOGGER.warning("[EM] set_maintenance: entry_id %s not found", eid)
+            await _notify_unknown_entry(hass, "set_maintenance", eid)
 
     # ── export_config ─────────────────────────────────────────────────────────
     async def _export(call: ServiceCall):
@@ -190,30 +215,71 @@ async def async_register_services(hass: HomeAssistant) -> None:
             with open(src, encoding="utf-8") as f:
                 return _j.load(f)
 
-        data    = await hass.async_add_executor_job(_read)
+        # FIX (audit v7.0.0, alto): un json.load senza gestione di
+        # JSONDecodeError, e nessuna verifica che il file fosse un oggetto
+        # con una chiave "devices" a lista, facevano crashare il servizio
+        # con un traceback opaco invece del messaggio d'errore già usato
+        # qualche riga sopra per il caso "file non trovato".
+        try:
+            data = await hass.async_add_executor_job(_read)
+        except Exception as ex:
+            _LOGGER.error("[EM Import] File JSON non valido: %s — %s", src, ex)
+            await hass.services.async_call("persistent_notification", "create", {
+                "message": (f"❌ File di import non valido: `/config/www/{filename}`\n\n"
+                            f"Errore: `{ex}`\n\nVerifica che sia un export "
+                            f"generato da **export_config** e non sia stato modificato."),
+                "title":   "Elettrodomestico Monitor — Import Error",
+                "notification_id": "em_import",
+            })
+            return
+
+        if not isinstance(data, dict) or not isinstance(data.get("devices"), list):
+            _LOGGER.error("[EM Import] Struttura file inattesa (atteso oggetto con chiave 'devices' a lista): %s", src)
+            await hass.services.async_call("persistent_notification", "create", {
+                "message": (f"❌ Struttura del file non valida: `/config/www/{filename}`\n\n"
+                            f"Atteso un oggetto JSON con una chiave `devices` (lista).\n"
+                            f"Verifica che sia un export generato da **export_config**."),
+                "title":   "Elettrodomestico Monitor — Import Error",
+                "notification_id": "em_import",
+            })
+            return
+
         updated = created = skipped = 0
 
         for dev in data.get("devices", []):
+            if not isinstance(dev, dict):
+                skipped += 1
+                continue
             slot      = dev.get("slot")
             new_data  = dev.get("data", {})
             new_title = dev.get("title", "")
 
             try:
                 slot = int(slot)
-            except Exception:
+            except (TypeError, ValueError):
                 _LOGGER.error("[EM Import] Invalid slot: %s", slot)
                 skipped += 1
                 continue
 
-            if not new_data:
+            if not isinstance(new_data, dict) or not new_data:
                 skipped += 1
                 continue
+
+            # Comparazione robusta: alcune entry più vecchie possono avere
+            # CONF_SLOT salvato come stringa — evitiamo un mismatch di tipo
+            # str/int che farebbe "matches" sempre vuoto e duplicherebbe lo
+            # slot (audit v7.0.0, alto).
+            def _slot_of(e):
+                try:
+                    return int(e.data.get(CONF_SLOT))
+                except (TypeError, ValueError):
+                    return None
 
             matches = [
                 e for e in hass.config_entries.async_entries(DOMAIN)
                 if (e.data.get(CONF_ENTRY_TYPE) in (ENTRY_TYPE_APPLIANCE, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE)
                     or e.data.get("entry_type") in ("irrigation", "device"))
-                and e.data.get(CONF_SLOT) == slot
+                and _slot_of(e) == slot
             ]
 
             if matches:
@@ -227,15 +293,24 @@ async def async_register_services(hass: HomeAssistant) -> None:
                              slot, entry.title, new_title)
                 updated += 1
             else:
-                # Create new device via import flow
+                # Create new device via import flow. async_step_import now
+                # rejects a colliding slot on its own (audit v7.0.0, alto) —
+                # inspect the flow result instead of assuming success just
+                # because async_init didn't raise.
                 try:
-                    await hass.config_entries.flow.async_init(
+                    result = await hass.config_entries.flow.async_init(
                         DOMAIN,
                         context={"source": "import"},
                         data=new_data,
                     )
-                    _LOGGER.info("[EM Import] Created x%s: %s", slot, new_title)
-                    created += 1
+                    if result.get("type") == "create_entry":
+                        _LOGGER.info("[EM Import] Created x%s: %s", slot, new_title)
+                        created += 1
+                    else:
+                        _LOGGER.error(
+                            "[EM Import] x%s (%s) non creato: %s",
+                            slot, new_title, result.get("reason", result.get("type")))
+                        skipped += 1
                 except Exception as e:
                     _LOGGER.error("[EM Import] Error creating x%s: %s", slot, e)
                     skipped += 1
@@ -244,8 +319,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "message": (f"✅ Import completato\n\n"
                         f"- Aggiornati: **{updated}** device\n"
                         f"- Creati: **{created}** device\n"
-                        f"- Non trovati: **{skipped}** device\n\n"
-                        f"⚠️ Riavvia HA per applicare le modifiche."),
+                        f"- Saltati: **{skipped}** device\n\n"
+                        # FIX (audit v7.0.0, minore): ogni entry registra già
+                        # un update_listener che ricarica automaticamente al
+                        # salvataggio, e le entry nuove vengono avviate da HA
+                        # da sole — il vecchio messaggio spingeva a un
+                        # riavvio completo non necessario.
+                        f"ℹ️ Le modifiche sono già attive: i device aggiornati si "
+                        f"ricaricano automaticamente, quelli nuovi si avviano da soli."),
             "title":   "Elettrodomestico Monitor — Import",
             "notification_id": "em_import",
         })
@@ -287,6 +368,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             await coord.start_cycle(zone_idx=zone)
         else:
             _LOGGER.warning("[EM] irrigation.start: entry %s not found or not irrigation", eid)
+            await _notify_unknown_entry(hass, "irrigation_start", eid)
 
     async def _irr_stop(call: ServiceCall):
         eid   = call.data["entry_id"]
@@ -295,6 +377,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             await coord.stop_cycle()
         else:
             _LOGGER.warning("[EM] irrigation.stop: entry %s not found", eid)
+            await _notify_unknown_entry(hass, "irrigation_stop", eid)
 
     # ── Register all ──────────────────────────────────────────────────────────
     services = {

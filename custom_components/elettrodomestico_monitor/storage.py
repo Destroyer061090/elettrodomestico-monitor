@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    storage.py
-# VERSION: 5.1.1
+# VERSION: 5.2.0
 # DESC:    Storage — persistent data per device (statistics, cycle info)
 # CHANGED: 2026-06-11
 # ============================================================
@@ -43,6 +43,38 @@ def _default(instance_id: str) -> dict[str, Any]:
     }
 
 
+def _sanitize(data: dict, instance_id: str) -> dict:
+    """Reset any top-level field whose stored type doesn't match the
+    default's type back to the default value.
+
+    FIX (audit v7.0.0, medio): async_load() merged whatever JSON was on
+    disk with no type validation. A single corrupted numeric field (e.g.
+    "energy_today" saved as a string by a bad write, a manual edit, or a
+    future format change) would load silently and only surface later as an
+    UNCAUGHT TypeError inside coordinator._integrate()'s
+    "self._e_today += delta" — breaking that coordinator's updates
+    indefinitely. Validating at load time keeps a single bad field from
+    taking down the whole device.
+    """
+    defaults = _default(instance_id)
+    for key, dflt in defaults.items():
+        if key not in data or key == "weekly":
+            continue
+        val = data[key]
+        ok = (
+            isinstance(val, bool) if isinstance(dflt, bool) else
+            (isinstance(val, (int, float)) and not isinstance(val, bool)) if isinstance(dflt, (int, float)) else
+            isinstance(val, str) if isinstance(dflt, str) else
+            True
+        )
+        if not ok:
+            _LOGGER.warning(
+                "[EM Storage] '%s': tipo inatteso per il campo '%s' (%r) — ripristinato al default",
+                instance_id, key, val)
+            data[key] = dflt
+    return data
+
+
 class ElettrodomesticoStorage:
     def __init__(self, hass: HomeAssistant, instance_id: str) -> None:
         self._store: Store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{instance_id}")
@@ -65,6 +97,7 @@ class ElettrodomesticoStorage:
                 base.update(stored)
                 for d in WEEK_DAYS:
                     base["weekly"].setdefault(d, {"cicli":"0","tempo":"0min","consumo":0.0,"costo":0.0})
+                base = _sanitize(base, self._instance_id)
                 self._data = base
             except Exception as ex:
                 import logging

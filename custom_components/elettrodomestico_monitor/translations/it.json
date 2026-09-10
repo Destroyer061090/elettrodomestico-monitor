@@ -14,6 +14,7 @@
           "vendita_kwh_sensor": "☀️ Sensore dinamico €/kWh vendita (sovrascrive il valore fisso)",
           "fv_enabled": "🌞 FOTOVOLTAICO — Attiva calcolo autoconsumo (costo rete vs risparmio sole)",
           "fv_grid_sensor": "🌞 FOTOVOLTAICO — Sensore potenza rete (+ preleva / − immette)",
+          "fv_invert": "🌞 FOTOVOLTAICO — Inverti segno sensore rete (se il tuo sensore usa + per l'immissione)",
           "fv_threshold_w": "🌞 FOTOVOLTAICO — Soglia W per ignorare rumore (0 = nessuna)"
         },
         "description": "Per ogni risorsa: inserisci il valore fisso OPPURE seleziona un sensore dinamico (es. dal tuo fornitore). Il sensore ha priorità sul valore fisso."
@@ -50,6 +51,7 @@
           "device_icon": "Icona",
           "vacuum_entity": "Entità vacuum (obbligatorio — es: vacuum.roomba)",
           "battery_sensor": "Sensore batteria % (opzionale — es: sensor.roomba_batteria)",
+          "vacuum_return_pct": "Batteria minima per rientro alla base % (0 = disabilitato)",
           "trigger_delay_m": "Ritardo rilevamento fine ciclo (minuti)",
           "custom_message": "Messaggio notifica fine pulizia",
           "notify_push": "Abilita notifica Push",
@@ -144,7 +146,10 @@
       "entity_in_use": "Questa entità è già assegnata a un altro dispositivo configurato."
     },
     "abort": {
-      "hub_only_selected": "Hub configurato. Aggiungi device tramite 'Aggiungi Integrazione' → Elettrodomestico Monitor."
+      "hub_only_selected": "Hub configurato. Aggiungi device tramite 'Aggiungi Integrazione' → Elettrodomestico Monitor.",
+      "slot_taken": "Import annullato: lo slot indicato nel file è già usato da un altro device.",
+      "slot_invalid": "Import annullato: slot mancante o non valido nel file di import.",
+      "hub_already_exists": "Un Hub Globale è già configurato (o in fase di creazione da un altro flow)."
     }
   },
   "options": {
@@ -162,6 +167,7 @@
           "vendita_kwh_sensor": "☀️ VENDITA SOLARE — oppure Sensore dinamico €/kWh (ha priorità)",
           "fv_enabled": "🌞 FOTOVOLTAICO — Attiva calcolo autoconsumo (costo rete vs risparmio sole)",
           "fv_grid_sensor": "🌞 FOTOVOLTAICO — Sensore potenza rete (+ preleva / − immette)",
+          "fv_invert": "🌞 FOTOVOLTAICO — Inverti segno sensore rete (se il tuo sensore usa + per l'immissione)",
           "fv_threshold_w": "🌞 FOTOVOLTAICO — Soglia W per ignorare rumore (0 = nessuna)"
         },
         "description": "Per ogni risorsa: imposta il valore fisso OPPURE seleziona un sensore (il sensore ha priorità). In fondo, il Fotovoltaico ripartisce il consumo tra rete (costo) e sole (risparmio)."
@@ -181,6 +187,7 @@
           "switch_entity": "Switch fisico (opzionale)",
           "trigger_entity": "Entità trigger esterna (opzionale)",
           "vacuum_entity": "Entità vacuum",
+          "vacuum_return_pct": "Batteria minima per rientro alla base % (0 = disabilitato)",
           "battery_sensor": "Sensore batteria % (opzionale)",
           "source_unit": "Unità sorgente",
           "total_unit": "Unità totale",
@@ -195,8 +202,23 @@
           "image_on": "Immagine stato ON",
           "image_off": "Immagine stato OFF",
           "power_sensor_2": "Sensore potenza pompa (kWh)",
-          "power_share": "Quota sensore (1.0 = 100% | 0.25 = 25% se condiviso)"
+          "power_share": "Quota sensore (1.0 = 100% | 0.25 = 25% se condiviso)",
+          "dev_battery_sensor": "🔋 Sensore % batteria (obbligatorio)",
+          "dev_charge_switch": "🔌 Switch presa di ricarica (opzionale)",
+          "dev_start_pct": "Soglia avvio carica % (sotto → carica)",
+          "dev_stop_pct": "Soglia stop carica % (sopra → stop)",
+          "flow_sensor": "Sensore Portata (L/min)",
+          "pump_sensor": "Sensore Potenza Pompa (W)",
+          "meteo_entity": "Sensore Meteo (skip se pioggia)",
+          "s1_time": "Orario 1",
+          "s2_time": "Orario 2",
+          "s3_time": "Orario 3"
         }
+      },
+      "irr_zones": {
+        "title": "Configura Zone",
+        "description": "Imposta nome, switch e durata (minuti) per ciascuna delle {num_zones} zone.",
+        "data": {}
       },
       "advanced": {
         "title": "Orari Personalizzati",

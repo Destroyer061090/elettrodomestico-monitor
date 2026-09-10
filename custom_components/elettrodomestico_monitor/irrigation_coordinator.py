@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    irrigation_coordinator.py
-# VERSION: 5.9.0
+# VERSION: 5.9.1
 # DESC:    Irrigation coordinator — zone cycling, scheduling, stats, countdown
 # CHANGED: 2026-08-29 (v6.2.5: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo,
@@ -65,10 +65,13 @@ def _enabled(t: str) -> bool:
 
 
 def _fmt(h: float) -> str:
-    total_s = int(h * 3600)
-    d, rem = divmod(total_s, 86400)
-    hh, rem = divmod(rem, 3600)
-    mm = rem // 60
+    # FIX (audit v7.0.0, minore): era troncamento (int(h*3600)), poteva
+    # mostrare un minuto in meno per errore di virgola mobile. Allineato
+    # all'arrotondamento già usato da coordinator._fmt().
+    if h < 0: h = 0.0
+    total_m = int(round(h * 60))
+    d, rem = divmod(total_m, 1440)
+    hh, mm = divmod(rem, 60)
     if d: return f"{d}d {hh}h {mm}m"
     if hh: return f"{hh}h {mm}m"
     return f"{mm}min"
@@ -449,16 +452,22 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             es_cycle = max(0.0, round(self._es_today - es_start, 4))
             duration_str = _fmt(elapsed_h)
 
+            # FIX (audit v7.0.0 — CRITICO): il tempo è già accumulato di
+            # continuo da _async_update_data() ad ogni poll mentre
+            # self._cycle_active è True (vedi COORDINATOR_UPDATE_INTERVAL),
+            # esattamente come coordinator._tick_time()/_cycle_end() per gli
+            # elettrodomestici. Sommare di nuovo elapsed_h qui raddoppiava
+            # il tempo mostrato (es. 10 minuti reali -> ~20 minuti in
+            # "Tempo Oggi"). elapsed_h resta usato solo per il testo
+            # 'duration_str' mostrato nella notifica. Vedi CHANGELOG.md.
+            #
             # Count the cycle and notify ONLY if it ran to completion (not interrupted)
             if not was_stopped:
                 self._c_today += 1; self._c_month += 1; self._c_year += 1
-                self._t_today += elapsed_h; self._t_month += elapsed_h; self._t_year += elapsed_h
                 await self._persist()
                 hub = get_hub_config(self.hass)
                 await self._notify_complete(duration_str, l_consumed, kwh_consumed, hub, eg_cycle, es_cycle)
             else:
-                # Still accumulate elapsed time, but don't count as a completed cycle
-                self._t_today += elapsed_h; self._t_month += elapsed_h; self._t_year += elapsed_h
                 await self._persist()
                 _LOGGER.info("[IRR %s] Cycle interrupted — not counted", self.instance_id)
 
@@ -626,14 +635,13 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                 self._es_today += es; self._es_month += es; self._es_year += es
         self._last_int_ts = now
 
-    def _integrate_flow(self):
-        self._integrate()
-
-    def _integrate_pump(self):
-        pass  # handled by _integrate (kept for compatibility)
-
     def _fv_grid_fraction(self):
         """Fraction (0..1) of current pump power drawn from the grid. None if FV off."""
+        # FIX (audit v7.0.0): coordinator.py rispetta il flag "fv_exclude"
+        # per escludere un device dal conteggio fotovoltaico; qui mancava,
+        # rendendo impossibile escludere la pompa di irrigazione dallo
+        # split rete/solare.
+        if self.config.get("fv_exclude"): return None
         hub = get_hub_config(self.hass)
         if not hub.get("fv_enabled"): return None
         gs = hub.get("fv_grid_sensor")
