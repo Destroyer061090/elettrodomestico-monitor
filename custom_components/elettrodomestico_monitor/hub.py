@@ -1,14 +1,17 @@
 # ============================================================
 # FILE:    hub.py
-# VERSION: 5.8.6
+# VERSION: 5.9.0
 # DESC:    Hub config reader — global settings (costs, notify, schedule)
 # CHANGED: 2026-06-11
 # ============================================================
 """Hub helper — reads global configuration and resolves costs live."""
 from __future__ import annotations
+import logging
 from typing import Any
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from .const import (
     DOMAIN, ENTRY_TYPE_HUB, CONF_ENTRY_TYPE,
     CONF_COSTO_KWH,   CONF_COSTO_KWH_SENSOR,
@@ -21,6 +24,9 @@ from .const import (
     DEFAULT_COST, DEFAULT_NOTIFY_START, DEFAULT_NOTIFY_END, DEFAULT_SCHEDULE,
 )
 from .presets import COST_KEY_KWH, COST_KEY_ACQUA, COST_KEY_GAS, COST_KEY_VENDITA
+
+_LOGGER = logging.getLogger(__name__)
+_ISSUE_MISSING_PUSH = "missing_push_targets"
 
 _BAD = {STATE_UNAVAILABLE, STATE_UNKNOWN, None, "", "unknown", "unavailable"}
 
@@ -92,3 +98,63 @@ def get_hub_config(hass: HomeAssistant) -> dict[str, Any]:
         "auto_off_time": hub_data.get(CONF_AUTO_OFF_TIME, DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE,
         "meteo_entity":  hub_data.get("meteo_entity", "") or "",
     }
+
+
+async def async_repair_push_targets(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Auto-heal push_targets that reference a notify entity which no
+    longer exists (e.g. the iOS/Android companion app re-registered under a
+    new entity_id after a reinstall) — migrate to notify.mobile_app_<name>
+    if that entity now exists, otherwise raise a Repair issue so the user
+    knows a target is silently undeliverable instead of discovering it only
+    when a notification never arrives.
+
+    FIX (segnalazione utente v7.0.3): un push_target non più valido veniva
+    perso in silenzio da notify_helper.async_send_push (vedi quel modulo)
+    senza che l'utente venisse mai avvisato che quel destinatario non
+    arriva più a destinazione. Chiamata una volta ad ogni avvio/reload
+    dell'Hub — economica e idempotente, non va ripetuta ad ogni poll.
+    """
+    targets = [str(t).strip() for t in (entry.data.get(CONF_PUSH_TARGETS) or []) if str(t).strip()]
+    issue_id = f"{_ISSUE_MISSING_PUSH}_{entry.entry_id}"
+
+    if not targets:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+
+    fixed: list[str] = []
+    missing: list[str] = []
+    changed = False
+
+    for t in targets:
+        if hass.states.get(t) is not None:
+            fixed.append(t)
+            continue
+        svc_name = t.split(".", 1)[1] if "." in t else t
+        candidate = f"notify.mobile_app_{svc_name}"
+        if candidate != t and hass.states.get(candidate) is not None:
+            fixed.append(candidate)
+            changed = True
+            _LOGGER.info(
+                "[EM] Hub: push_target '%s' non trovato — migrato automaticamente a '%s'",
+                t, candidate)
+        else:
+            fixed.append(t)  # keep the stale value — never silently drop user config
+            missing.append(t)
+
+    if changed:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_PUSH_TARGETS: fixed})
+
+    if missing:
+        _LOGGER.warning(
+            "[EM] Hub: push_target non trovato e senza alternativa automatica: %s",
+            ", ".join(missing))
+        ir.async_create_issue(
+            hass, DOMAIN, issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=_ISSUE_MISSING_PUSH,
+            translation_placeholders={"targets": ", ".join(missing)},
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)

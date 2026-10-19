@@ -1,10 +1,12 @@
 # ============================================================
 # FILE:    coordinator.py
-# VERSION: 6.0.8
+# VERSION: 7.0.4
 # DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
 # CHANGED: 2026-07-28 (v6.2.4: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo.
 #          Vedi CHANGELOG.md)
+# CHANGED: 2026-10-19 (v7.0.4: async_set_maintenance accetta 'note' —
+#          revisione HACS @frenck, vedi CHANGELOG.md)
 # ============================================================
 """Coordinator for Elettrodomestico Monitor v9.
 
@@ -902,6 +904,19 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         if self._is_vacuum:
             vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
             if not vac: return
+            # FIX (segnalazione utente v7.0.3): questo è un SECONDO punto
+            # (indipendente da vacuum.py._call_vacuum) che può comandare il
+            # vacuum — scatta quando il Hub/device ha un orario
+            # auto_on_time/auto_off_time configurato (_sched_on/_sched_off),
+            # bypassando completamente l'entità proxy e il suo controllo di
+            # disponibilità. È la spiegazione più plausibile per un comando
+            # vacuum senza traccia in nessuna automazione utente. Stesso
+            # controllo di vacuum.py._call_vacuum.
+            st = self.hass.states.get(vac)
+            if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                _LOGGER.info("[%s] vacuum %s ignorato: %s non disponibile",
+                             self.instance_id, action, vac)
+                return
             svc = "start" if is_on else "return_to_base"
             try: await self.hass.services.async_call("vacuum", svc, {"entity_id": vac})
             except Exception as ex: _LOGGER.warning("[%s] vacuum.%s failed: %s", self.instance_id, svc, ex)
@@ -985,8 +1000,15 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
         """Alias used by the reset_sensors service (same as full reset)."""
         await self.async_reset_all()
 
-    async def async_set_maintenance(self):
+    async def async_set_maintenance(self, note: str = ""):
+        # FIX (HACS review @frenck, 2026-10-19 — CRITICO): il servizio
+        # set_maintenance passa sempre un 'note' (vedi services.py), ma
+        # questa firma non lo accettava — TypeError per ogni elettrodomestico,
+        # clima e vacuum (non per irrigazione/batteria, che già avevano il
+        # parametro). Allineato allo stesso pattern di irrigation_coordinator.py.
         self.storage.set("maintenance_date", dt_util.now().strftime("%d/%m/%Y %H:%M"))
+        if note:
+            self.storage.set("maintenance_note", note)
         await self.storage.async_save()
         self._push()
 

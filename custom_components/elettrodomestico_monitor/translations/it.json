@@ -235,5 +235,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "missing_push_targets": {
+      "title": "Destinatario notifiche Push non trovato",
+      "description": "Il destinatario push `{targets}` configurato nell'Hub Globale non esiste più in Home Assistant (es. l'app companion è stata ri-registrata con un nuovo entity_id) e non è stato trovato un equivalente `notify.mobile_app_*` a cui migrarlo automaticamente. Le notifiche push verso questo destinatario non vengono recapitate. Vai su **Impostazioni → Dispositivi e servizi → Elettrodomestico Monitor → Hub Globale → Configura** e aggiorna il destinatario con quello corretto."
+    }
   }
 }

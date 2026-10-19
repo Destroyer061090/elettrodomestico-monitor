@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    irrigation_coordinator.py
-# VERSION: 5.9.1
+# VERSION: 5.9.2
 # DESC:    Irrigation coordinator — zone cycling, scheduling, stats, countdown
 # CHANGED: 2026-08-29 (v6.2.5: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo,
@@ -507,6 +507,13 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             # so totals accrue over time even if the sensors don't emit changes.
             if self._cycle_active:
                 self._integrate()
+                # FIX (v7.0.2 — CRITICO): il tempo si accumula qui, non nel
+                # poll periodico del coordinator (_async_update_data) — vedi
+                # il commento lì per il perché. Questo tick al secondo è
+                # l'unico segnale che scatta in modo affidabile per tutta
+                # la durata di una zona attiva.
+                dh = 1.0 / 3600.0
+                self._t_today += dh; self._t_month += dh; self._t_year += dh
             if self._countdown_s > 0:
                 self._countdown_s = max(0, self._countdown_s - 1)
                 self.async_set_updated_data(self._build())
@@ -929,9 +936,22 @@ class IrrigationCoordinator(DataUpdateCoordinator):
     # ── Coordinator update ────────────────────────────────────────────────────
 
     async def _async_update_data(self) -> dict[str, Any]:
-        if self._cycle_active:
-            dh = COORDINATOR_UPDATE_INTERVAL / 3600.0
-            self._t_today += dh; self._t_month += dh; self._t_year += dh
+        # FIX (v7.0.2 — CRITICO, correzione al fix v7.0.0): il tempo NON
+        # va accumulato qui. _tick() (in _start_countdown, sotto) chiama
+        # async_set_updated_data() una volta al secondo per l'intera durata
+        # di ogni zona attiva — e async_set_updated_data() CANCELLA e
+        # riprogramma il refresh automatico del coordinator di HA
+        # (self._unsub_refresh() + self._schedule_refresh()). Con un push
+        # manuale ogni secondo, i 20s di COORDINATOR_UPDATE_INTERVAL non
+        # trascorrono mai senza interruzioni: questo metodo non viene MAI
+        # invocato mentre una zona è attiva. Il fix v7.0.0 (che accumulava
+        # qui) sembrava corretto a lettura del codice ma in pratica non
+        # accumulava MAI nulla durante un ciclo reale — "Tempo Oggi/Ieri"
+        # restava a 0min anche con cicli completati regolarmente (litri,
+        # kWh e conteggio cicli restavano invece corretti, perché passano
+        # da _integrate() e da _c_today, non da questo metodo). Il tempo
+        # si accumula ora nel tick al secondo, l'unico meccanismo che
+        # scatta davvero durante un ciclo. Vedi CHANGELOG.md.
         data = self._build()
         # Skip no-op re-renders to avoid flooding the WebSocket (irrigation
         # exposes many sensors; pushing identical data every poll caused the

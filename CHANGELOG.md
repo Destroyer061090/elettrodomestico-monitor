@@ -5,6 +5,327 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.0.4] - 2026-10-19
+
+### Fixed — Critico (revisione HACS, @frenck)
+
+Richieste di modifica ricevute dal maintainer HACS (@frenck) sulla pull
+request di submission. Tutti i 4 punti verificati sul codice e corretti:
+
+1. **Servizi di configurazione richiamabili da qualunque utente, non solo
+   admin.** `services.py` registrava tutti i servizi (`reset_sensors`,
+   `reset_all_sensors`, `set_maintenance`, `export_config`,
+   `import_config`, `remove_all_devices`, `irrigation_start/stop`) con
+   `hass.services.async_register` — qualunque utente non-admin poteva
+   creare/modificare/eliminare config entry o esportare i dati di tutti i
+   device. Passato a `homeassistant.helpers.service.
+   async_register_admin_service` per tutti.
+   - **Path traversal in `import_config`**: il parametro `filename`
+     veniva unito al percorso senza alcun controllo (`services.py`, `_import`)
+     — un valore come `../../secrets.yaml` usciva dalla cartella di export.
+     Aggiunta `_sanitize_filename()`: accetta solo un nome file semplice
+     (nessun `/`, `\`, `..`), rifiuta tutto il resto con una notifica d'errore.
+   - **Export leggibile da chiunque senza autenticazione**: `export_config`
+     scriveva in `/config/www/em_export.json`, che Home Assistant serve
+     SENZA autenticazione su `/local/em_export.json` — l'export completo di
+     tutte le config entry (tariffe, entity_id, instance_id) era scaricabile
+     da chiunque potesse raggiungere l'istanza. Spostato in
+     `/config/elettrodomestico_monitor/` (non servita via HTTP);
+     `import_config` aggiornato a cercare lì di default. I messaggi di
+     notifica non promettono più un URL `/local/` pubblico.
+2. **I/O bloccante sul event loop.** `_import` chiamava `src.exists()`
+   direttamente nel coroutine async (`services.py`, prima della v7.0.4) —
+   una chiamata disco sincrona sul loop di HA. Spostata nell'executor
+   insieme alla lettura (`_read()` ora solleva `FileNotFoundError` se il
+   file non esiste, gestita come branch dedicato).
+3. **`set_maintenance` andava in crash per elettrodomestici, clima e
+   vacuum.** Il servizio chiama sempre `coord.async_set_maintenance(note)`
+   (`services.py`), ma `ElettrodomesticoCoordinator.async_set_maintenance`
+   (`coordinator.py`) non accettava parametri — `TypeError` per ogni device
+   tranne irrigazione e batteria (che già avevano `note: str = ""`).
+   Allineata la firma allo stesso pattern già usato da
+   `irrigation_coordinator.py` (salva la nota in `maintenance_note` se
+   presente). Aggiunto anche il campo `note` a `services.yaml`, mancante
+   per `set_maintenance` nonostante il servizio lo accettasse già.
+4. **README: dipendenze della card non documentate.** La card Lovelace
+   bundled apre i popup tramite `browser_mod` e usa `card-mod`,
+   `multiple-entity-row`, `button-card` e `mini-graph-card` — senza
+   `browser_mod` i pulsanti della card non fanno nulla, senza alcun errore
+   visibile. Aggiunta una sezione "Dipendenze della card" al README con
+   l'elenco completo, da installare via HACS prima di usare la card.
+
+**Nota di compatibilità**: chi ha già usato `export_config`/`import_config`
+prima di questa versione troverà i vecchi export solo in `/config/www/`,
+non più nella nuova cartella — vanno rigenerati con un nuovo export dopo
+l'aggiornamento se servono di nuovo.
+
+### Added
+
+- `tests/test_services.py` (nuovo): sanificazione del `filename` di
+  `import_config` (funzione pura `_sanitize_filename`, parametrizzata su
+  path traversal con `/`, `\` e percorso assoluto) e verifica end-to-end
+  che il servizio si fermi con una notifica d'errore invece di tentare la
+  lettura. Il gating admin (`async_register_admin_service`) non è
+  ri-testato qui: è funzionalità già testata upstream in
+  home-assistant/core.
+- `tests/test_coordinator.py`: 2 nuovi casi per `async_set_maintenance`
+  (con e senza nota) a copertura del crash corretto nel punto 3 sopra.
+
+## [7.0.3] - 2026-10-15
+
+### Fixed — Critico (segnalazione utente, con bug report dettagliato)
+
+**Notifiche push perse in silenzio quando il destinatario non esiste più**
+(es. app companion iOS/Android ri-registrata con un nuovo entity_id dopo
+una reinstallazione). Log osservato dall'utente:
+```
+homeassistant.exceptions.ServiceNotFound: Action notify.iphone_di_alessandro not found
+```
+con "Task exception was never retrieved" — un errore non riconducibile a
+nessuna integrazione specifica nel log.
+
+- **`notify_helper.py`, `_send_push` (ora pubblica, `async_send_push`)**:
+  `notify.send_message` è un dispatcher SEMPRE registrato in Home
+  Assistant — `has_service("notify", "send_message")` verificava solo che
+  quel servizio generico esistesse, non che l'entità target esistesse
+  davvero. Chiamarlo con un `entity_id` non più valido non sollevava
+  un'eccezione (HA logga solo "entità mancante" a livello core), quindi
+  `sent` diventava `True` e la notifica spariva senza mai raggiungere i
+  fallback funzionanti sotto. Ora si tenta `send_message` solo se
+  l'entità esiste davvero in `hass.states`; se manca, si prova prima il
+  servizio legacy `notify.<nome>`/`notify.mobile_app_<nome>` e infine,
+  novità di questo fix, anche l'**entità** `notify.mobile_app_<nome>` se
+  esiste — copre esattamente il caso segnalato (vecchia entità sparita,
+  nuova entità presente con un altro nome dopo la ri-registrazione
+  dell'app).
+- **`update_coordinator.py`, `_notify_update`**: duplicava la stessa
+  logica (stesso difetto) e scartava le eccezioni con un `except: pass`
+  silenzioso. Ora riusa `notify_helper.async_send_push`, l'unica
+  implementazione condivisa.
+- **Auto-riparazione dei destinatari** (`hub.py`,
+  `async_repair_push_targets`, nuova — chiamata da `__init__.py` ad ogni
+  avvio/reload dell'Hub): se un `push_target` configurato non esiste più
+  ma esiste un `notify.mobile_app_<nome>` equivalente, l'entry viene
+  aggiornata automaticamente con un log INFO. Se non esiste alcuna
+  alternativa, viene creata una issue in **Impostazioni → Riparazioni**
+  (severità WARNING, tradotta IT/EN) che indica all'utente quale
+  destinatario manca, oltre a un WARNING in log con prefisso `[EM]`.
+  L'entry dell'utente non viene mai modificata silenziosamente senza un
+  log che lo segnali.
+- **Task non attesi**: `__init__.py._bootstrap_hub` (eseguito dentro un
+  `hass.async_create_task` non atteso) ora cattura e logga qualunque
+  eccezione invece di lasciarla propagare come "Task exception was never
+  retrieved" non diagnosticabile. Verificati tutti gli altri
+  `async_create_task`/`add_job` del componente che possono arrivare a
+  inviare una notifica: instradano tutti attraverso
+  `notify_helper.async_send_notification`, che non solleva mai
+  eccezioni per costruzione — nessun'altra modifica necessaria lì.
+
+**L'entità vacuum di EM inoltrava comandi a un robot non disponibile**
+(secondo bug report dell'utente, stessa release). Log osservato:
+```
+homeassistant.helpers.service: Referenced entities vacuum.k2 are missing or not currently available
+```
+con `vacuum.k2` (robot Tuya/localtuya, gestito da `_VacuumEntity` in
+`vacuum.py`) riferito solo dalla config entry EM, senza traccia in alcuna
+automazione utente.
+
+- **`vacuum.py`, `_call_vacuum` (D1)**: nessun controllo di disponibilità
+  prima di inoltrare il comando al robot reale. Ora verifica
+  `hass.states.get(self._vacuum_eid)` e, se l'entità è assente/
+  `unavailable`/`unknown`, non chiama il servizio e logga solo un INFO
+  `[EM x<slot>] <servizio> ignorato: <entità> non disponibile` — mai più
+  il warning generico di HA senza contesto EM.
+- **`vacuum.py`, property `available` (D2, nuova)**: il proxy EM restava
+  "disponibile" in HA a prescindere dallo stato del robot reale (ereditava
+  la disponibilità dal coordinator EM, non da `self._vacuum_eid`) —
+  automazioni e dashboard potevano comandare un robot spento senza
+  accorgersene. Ora rispecchia lo stato reale del robot; il listener
+  `_on_vacuum_state` già esistente la rivaluta automaticamente ad ogni
+  cambio di stato (nessun aggancio aggiuntivo necessario).
+- **`coordinator.py`, `_sw()` — ramo vacuum (trovato durante la verifica,
+  non nel report originale)**: un SECONDO punto, indipendente da
+  `vacuum.py._call_vacuum`, può comandare il robot reale — sia
+  dall'avvio/rientro manuale dalla card (`vacuum.py.async_start` /
+  `async_return_to_base` chiamano anche `coord._sw(...)`) sia dalla
+  programmazione oraria Hub/device (`auto_on_time`/`auto_off_time` →
+  `_sched_on`/`_sched_off`) — e bypassava completamente il controllo di
+  disponibilità, scavalcando anche il fix D1. È la spiegazione più
+  plausibile per il comando segnalato senza traccia in nessuna
+  automazione. Stesso controllo applicato qui.
+- **`vacuum.py`, `_check_battery_return`**: il controllo di rientro per
+  batteria scarica confrontava lo stato del robot con un'allowlist fissa
+  case-sensitive (`"cleaning"`,`"running"`,`"on"`), non riconoscendo gli
+  stati estesi dei robot cinesi/Tuya (`smart_cleaning`, `zone_cleaning`,
+  ecc. — già gestiti correttamente altrove in questo stesso file tramite
+  `VACUUM_INACTIVE_STATES`, vedi `activity`). Il rientro automatico non
+  scattava mai per questi stati — coerente con la segnalazione "il robot
+  muore durante la pulizia". Allineato alla stessa blocklist
+  case-insensitive; aggiunto anche un log DEBUG con lo stato grezzo
+  ricevuto, per diagnosticare futuri stati non ancora mappati.
+- **`const.py`, `DEFAULT_VACUUM_RETURN_PCT`**: il default era `0` (= nessun
+  rientro automatico), e ben TRE punti lo reimplementavano come `0`
+  hardcoded invece di usare questa costante condivisa:
+  `config_flow.py` (schema di creazione e Opzioni), `vacuum.py`
+  (fallback runtime di `_VacuumEntity`) e — il più subdolo — `number.py`
+  (valore iniziale della number entity `soglia_rientro_vacuum_xN`,
+  interrogata per prima da `_check_battery_return()`). Un device creato
+  prima di questo fix (come quello segnalato) non aveva mai salvato la
+  chiave e restava quindi silenziosamente SENZA alcuna rete di sicurezza.
+  Portato a `20` (%) in tutti e tre i punti — margine prudente sopra il
+  blocco critico hardware di molti robot (tipicamente 5-10%).
+  **Cambio di comportamento di default**, con un limite importante da
+  sapere: per un device vacuum creato ORA, o il cui `vacuum_return_pct`
+  non è mai stato esplicitamente salvato, il nuovo default (20%) si
+  applica. Ma `number.soglia_rientro_vacuum_xN` è una **RestoreEntity**:
+  se quella number entity esiste già (molto probabile per un device
+  vacuum già in uso, come quello segnalato) con un valore ripristinato a
+  0, HA continua a ripristinare quel valore salvato ad ogni riavvio — il
+  nuovo default si applica solo alla primissima creazione dell'entità, MAI
+  a uno stato già esistente, per lo stesso motivo per cui EM non forza mai
+  una riconfigurazione (vedi `migration.py`: non possiamo distinguere "mai
+  toccato, ancora al vecchio default" da "impostato deliberatamente a 0
+  dall'utente per disattivare la funzione"). **Chi ha già un device vacuum
+  configurato deve impostare manualmente `number.soglia_rientro_vacuum_xN`
+  al valore desiderato** (es. dalla card EM o da Impostazioni → Entità) se
+  vuole la protezione — non avviene da sola con questo aggiornamento.
+
+### Fixed — Robustezza (indagine utente del 2026-10-16: raffica di ~100 notifiche offline/online dopo un'interruzione di rete reale)
+
+L'utente ha segnalato "non funziona nulla dopo il riavvio" insieme a una
+raffica di circa 100 notifiche push/WhatsApp su molti device scollegati e
+riconnessi nell'arco di una notte. Analisi del log HA (21 ore) + dell'export
+della chat WhatsApp con i timestamp precisi delle notifiche EM:
+
+- Il log HA mostra un'interruzione DNS/rete reale tra le 20:10 e le 20:14
+  del 15/10, con `Timeout while contacting DNS servers` su decine di
+  integrazioni non correlate (non solo EM), più warning ripetuti di
+  rallentamento del loop di HA (`took longer than the scheduled update
+  interval`) per tutta la notte.
+- L'export WhatsApp conferma, con 13 episodi distinti nell'arco della
+  notte, che le raffiche di notifiche offline/online (Clima Small/Badroom/
+  Big, Boiler e VMC, Esterno Vetrata, Aspirapolvere, e-car, Pompa di
+  Calore) seguono quasi sempre entro pochi secondi una notifica di
+  completamento ciclo di EM stesso ("Prese PT completata"/"boiler
+  finita"). Nessuna traccia nel log di crash, errori di setup o eccezioni
+  non gestite riconducibili a EM: le entità hanno continuato a funzionare,
+  i device non online erano quelli realmente irraggiungibili sulla rete
+  domestica durante l'interruzione.
+- **Nessuna di queste chiamate aveva un timeout**: `notify_helper.py`
+  (`async_send_push`, `async_send_notification`) attendeva
+  indefinitamente `hass.services.async_call(...)` per ogni canale (push,
+  WhatsApp, Alexa, Google) — comportamento preesistente, non introdotto
+  dai fix della v7.0.3, ma che durante una vera interruzione DNS/rete può
+  tenere occupato per molti secondi il task del coordinator che invia la
+  notifica, aggiungendosi al carico generale già sotto stress quella
+  notte. Aggiunto un timeout di sicurezza (10s, costante
+  `_NOTIFY_CALL_TIMEOUT_S`) su tutte le chiamate di notifica in
+  `notify_helper.py`: un canale lento o irraggiungibile ora fallisce con
+  un WARNING dedicato invece di restare "appeso", senza impedire la
+  consegna sugli altri canali.
+- **Conclusione per l'utente**: in base alle evidenze, l'episodio è
+  coerente con un'interruzione di rete/DNS reale che ha colpito
+  contemporaneamente più sistemi (non solo EM) — non un difetto introdotto
+  dagli aggiornamenti recenti. Il timeout aggiunto qui è un rafforzamento
+  preventivo, non la correzione di un bug che ha causato l'incidente.
+
+### Added
+
+- Test in `tests/test_notify_helper.py` (4 nuovi casi per
+  `async_send_push`: entità esistente, entità mancante con fallback
+  `mobile_app` — sia entità che servizio legacy —, nessun fallback; più 1
+  nuovo caso per il timeout di sicurezza aggiunto il 2026-10-16) e
+  `tests/test_hub.py` (nuovo: entità valida, migrazione automatica,
+  issue di riparazione, entry vuota, issue che si auto-risolve).
+- Test in `tests/test_vacuum.py` (nuovo: `_call_vacuum` con robot
+  disponibile/unavailable/inesistente, property `available`, rientro per
+  batteria scarica con stato robot standard e non standard) e 2 nuovi casi
+  in `tests/test_coordinator.py` per il ramo vacuum di `_sw()`.
+
+### Fixed — Minore
+
+- `README.md`: la riga "**Versione:**" era rimasta ferma a 6.3.1 nelle
+  release 7.0.0–7.0.2 di questa sessione (dimenticata nei bump manuali,
+  non essendo disponibile un interprete per eseguire `bump_version.sh` in
+  questo ambiente) — risincronizzata.
+
+## [7.0.2] - 2026-09-13
+
+### Fixed — Critico, correzione al fix originale della 7.0.0 (segnalato dall'utente: irrigazione conclusa correttamente ma "Tempo Oggi"/"Tempo Ieri" fermi a 0min)
+
+Il fix del doppio conteggio del tempo di irrigazione (v7.0.0) aveva
+spostato l'accumulo del tempo dentro `_async_update_data()` (il refresh
+periodico del coordinator, ogni `COORDINATOR_UPDATE_INTERVAL` = 20s),
+rimuovendolo dal blocco `finally` di fine ciclo per non sommarlo due
+volte. Sembrava corretto rileggendo il codice, ma **in pratica quel
+metodo non viene mai invocato durante un ciclo di irrigazione**: la
+funzione `_tick()` (dentro `_start_countdown()`) chiama
+`self.async_set_updated_data(...)` una volta al secondo per l'intera
+durata di ogni zona attiva, e `async_set_updated_data()` **cancella e
+riprogramma da zero il refresh automatico del coordinator** ad ogni
+chiamata. Con un push manuale ogni secondo, i 20 secondi
+dell'intervallo di refresh non trascorrono mai senza interruzioni, quindi
+`_async_update_data()` — e con esso l'accumulo del tempo — non scattava
+mai mentre una zona era in funzione.
+
+Risultato osservato in produzione dall'utente: un'irrigazione completata
+regolarmente (1 ciclo, 523,40 L, 0,67 kWh — tutti valori corretti, perché
+litri/kWh/conteggio cicli passano da `_integrate()` e da `_c_today`, non
+dal metodo interessato dal bug) con **"Tempo Oggi" e "Tempo Ieri" fermi a
+0min**.
+
+Fix: il tempo si accumula ora direttamente nel tick al secondo di
+`_start_countdown()` (`irrigation_coordinator.py`), l'unico segnale che
+scatta in modo affidabile per l'intera durata di una zona attiva —
+indipendentemente dal refresh del coordinator. Rimossa la relativa
+logica (ormai inerte) da `_async_update_data()`. Il blocco `finally` di
+fine ciclo continua a NON sommare di nuovo il tempo trascorso via
+wall-clock, quindi il fix originale per il doppio conteggio resta valido.
+
+Aggiornato anche il test di regressione in
+`tests/test_irrigation_coordinator.py` (il precedente testava il
+meccanismo sbagliato, quello introdotto dalla 7.0.0 e qui corretto) per
+riflettere il meccanismo reale, con `async_call_later` reso sincrono nel
+test per evitare di aspettare secondi reali.
+
+### Verificato — stessa classe di bug altrove, nessuna azione necessaria
+
+Su richiesta esplicita dell'utente, verificato se lo stesso meccanismo
+(`async_set_updated_data()` che annulla/riprogramma il refresh periodico
+del coordinator) potesse manifestarsi anche fuori dall'irrigazione:
+
+- **`device_coordinator.py`**: `async_set_updated_data()` è legato solo a
+  eventi discreti (rollover, reset, manutenzione), mai a un tick continuo
+  — non a rischio.
+- **`coordinator.py`, elettrodomestici con un solo sensore di potenza**:
+  il gestore dell'evento sul sensore (`_on_power`) non scrive il valore
+  live nei dati pubblicati (la lettura avviene solo nel poll periodico
+  stesso) — la deduplicazione in `_push()` impedisce il problema. Non a
+  rischio.
+- **`coordinator.py` con sensore di potenza secondario
+  (`power_sensor_2`)**: qui il rischio sarebbe reale e della stessa
+  gravità dell'irrigazione (il gestore `_on_power2` scrive il valore live
+  direttamente nei dati pubblicati) — ma verificato dall'export di
+  configurazione dell'utente che nessuno dei suoi 22 device usa
+  `power_sensor_2`. Non fixato perché non riproducibile/non in uso;
+  eventuale fix da valutare se emergesse per un utente che usa davvero
+  questa funzione.
+- **`coordinator.py` con preset vacuum/clima**: rischio teorico più basso
+  (i soli dati che potrebbero causare un reset del timer, batteria vacuum
+  e testo del tempo-ciclo, cambiano una volta al minuto circa, non una
+  volta al secondo) — confermato dall'utente (2 vacuum + 4 clima in uso)
+  che non si è mai manifestato nella pratica. Nessuna modifica a
+  `coordinator.py` in questa release.
+
+### Added
+
+- **services.py, export_config**: oltre al file fisso
+  `/config/www/em_export.json` (che `import_config` continua a cercare
+  per nome di default — invariato, per non rompere il flusso "esporta poi
+  importa"), l'export ora scrive anche una copia datata
+  `em_export_YYMMDD.json`, per tenere uno storico degli export senza
+  sovrascriverli ad ogni esecuzione.
+
 ## [7.0.1] - 2026-09-10
 
 ### Fixed — Correzione a un fix della 7.0.0 (segnalato dai log reali dell'utente)

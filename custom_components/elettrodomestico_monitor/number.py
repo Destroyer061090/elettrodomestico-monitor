@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    number.py
-# VERSION: 5.8.1
+# VERSION: 5.8.2
 # DESC:    Number platform — configurable thresholds, zone durations
 # CHANGED: 2026-06-11
 # ============================================================
@@ -108,12 +108,22 @@ async def async_setup_entry(
         ),
     ]
     # Vacuum-only: battery return threshold (0 = disabled), editable from the card
-    from .const import CONF_VACUUM_ENTITY, CONF_VACUUM_RETURN_PCT
+    from .const import CONF_VACUUM_ENTITY, CONF_VACUUM_RETURN_PCT, DEFAULT_VACUUM_RETURN_PCT
     if (entry.data.get(CONF_VACUUM_ENTITY) or "").strip():
         try:
-            _ret_default = float(entry.data.get(CONF_VACUUM_RETURN_PCT, 0) or 0)
+            # FIX (segnalazione utente v7.0.3): terzo punto (oltre a
+            # config_flow.py e vacuum.py, corretti nello stesso fix) con lo
+            # stesso 0 hardcoded invece della costante condivisa
+            # DEFAULT_VACUUM_RETURN_PCT. Questo è il più subdolo dei tre:
+            # _NumberEntity è una RestoreEntity — una volta che questo valore
+            # (0) viene salvato/ripristinato al primo avvio, resta 0 per
+            # sempre ad ogni riavvio successivo, scavalcando qualunque fix
+            # fatto altrove, perché _check_battery_return() legge PRIMA lo
+            # stato live di questa number entity e usa self._return_pct
+            # (entry.data) solo come fallback se l'entità è unknown/unavailable.
+            _ret_default = float(entry.data.get(CONF_VACUUM_RETURN_PCT, DEFAULT_VACUUM_RETURN_PCT) or 0)
         except (ValueError, TypeError):
-            _ret_default = 0.0
+            _ret_default = float(DEFAULT_VACUUM_RETURN_PCT)
         _LOGGER.info("[EM Number] Creo soglia rientro batteria per vacuum x%s "
                      "(entity_id atteso: number.soglia_rientro_vacuum_x%s)", slot, slot)
         entities.append(_NumberEntity(

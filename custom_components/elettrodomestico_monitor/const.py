@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    const.py
-# VERSION: 6.2.0
+# VERSION: 6.2.1
 # DESC:    Constants — domain, config keys, defaults, vacuum states
 # CHANGED: 2026-07-20 (v6.1.0: allineata VERSION a manifest.json — prima
 #          l'header dichiarava 6.0.0 mentre la costante era 6.0.4)
@@ -8,7 +8,7 @@
 """Constants for Elettrodomestico Monitor v8."""
 
 DOMAIN   = "elettrodomestico_monitor"
-VERSION  = "7.0.1"
+VERSION  = "7.0.4"
 
 GITHUB_USER             = "Destroyer061090"
 GITHUB_REPO             = "elettrodomestico-monitor"
@@ -211,7 +211,15 @@ CONF_DEV_CHARGE_SWITCH  = "dev_charge_switch"     # smart plug switch entity
 CONF_DEV_START_PCT      = "dev_start_pct"         # below → start charging
 CONF_DEV_STOP_PCT       = "dev_stop_pct"          # above → stop charging
 CONF_VACUUM_RETURN_PCT  = "vacuum_return_pct"     # vacuum: at/below this %, send to base (0 = disabled)
-DEFAULT_VACUUM_RETURN_PCT = 0                      # default: disabled (no battery auto-return)
+# FIX (segnalazione utente v7.0.3): il default era 0 (= nessun rientro
+# automatico per batteria scarica) — un utente ha segnalato robot che
+# "muoiono" durante la pulizia prima di rientrare, proprio perché il
+# proprio device non aveva mai impostato esplicitamente questa soglia e
+# usava questo default silenziosamente disattivato. 20% è una rete di
+# sicurezza prudente (margine sopra il blocco critico hardware di molti
+# robot, tipicamente 5-10%) senza interrompere pulizie normali troppo
+# presto. Resta modificabile dalla UI (config_flow e number entity).
+DEFAULT_VACUUM_RETURN_PCT = 20
 DEFAULT_DEV_START_PCT   = 20
 DEFAULT_DEV_STOP_PCT    = 80
 SFX_DEV_BATTERY         = "ricarica_dispositivo"

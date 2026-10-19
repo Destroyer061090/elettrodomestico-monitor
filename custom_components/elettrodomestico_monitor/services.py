@@ -1,14 +1,16 @@
 # ============================================================
 # FILE:    services.py
-# VERSION: 5.7.2
+# VERSION: 7.0.4
 # DESC:    Services — export/import, reset, maintenance, irrigation start/stop
-# CHANGED: 2026-06-11
+# CHANGED: 2026-10-19
 # ============================================================
 """Services for Elettrodomestico Monitor."""
 from __future__ import annotations
 import logging
+from pathlib import Path
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 import voluptuous as vol
 
 from .const import (
@@ -23,6 +25,34 @@ except ImportError:
     ENTRY_TYPE_IRRIGATION = "irrigation"
 
 _LOGGER = logging.getLogger(__name__)
+
+# FIX (HACS review @frenck, 2026-10-19): export/import scrivevano/leggevano
+# da /config/www, che Home Assistant serve SENZA autenticazione su /local/ —
+# chiunque potesse raggiungere l'istanza poteva scaricare l'export completo
+# di tutte le config entry. Spostato in una sottocartella dedicata di
+# /config, non servita via HTTP.
+_EXPORT_SUBDIR = "elettrodomestico_monitor"
+
+
+def _sanitize_filename(raw: str) -> str | None:
+    """Return just the file name component of `raw`, or None if it contains
+    any path component (es. '../', '/', '\\') — impedisce di uscire dalla
+    cartella di export passando un 'filename' malevolo al servizio
+    import_config (FIX HACS review @frenck, 2026-10-19).
+
+    I separatori vengono controllati esplicitamente invece di affidarsi solo
+    a Path(...).name: su un host POSIX (es. la CI, tipicamente Linux) '\\'
+    non è un separatore di percorso per pathlib, quindi un filename come
+    'sub\\em_export.json' passerebbe inosservato se controllato solo con
+    pathlib.
+    """
+    raw = str(raw or "")
+    if not raw or "/" in raw or "\\" in raw:
+        return None
+    name = Path(raw).name
+    if not name or name != raw:
+        return None
+    return name
 
 
 async def _notify_unknown_entry(hass: HomeAssistant, service: str, entry_id: str) -> None:
@@ -109,7 +139,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     # ── export_config ─────────────────────────────────────────────────────────
     async def _export(call: ServiceCall):
-        """Export all device configs to /config/www/em_export.json"""
+        """Export all device configs to /config/elettrodomestico_monitor/em_export.json"""
         import json as _j
         import datetime as _dt
         from pathlib import Path
@@ -143,14 +173,22 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         export["devices"].sort(key=lambda x: int(x.get("slot") or 0))
 
-        out = Path(hass.config.path("www", "em_export.json"))
+        # FIX (richiesta utente v7.0.2): oltre al file fisso "em_export.json"
+        # (che import_config continua a cercare di default — non lo
+        # tocchiamo, per non rompere il flusso "esporta poi importa"),
+        # scriviamo anche una copia con la data ("em_export_YYMMDD.json") per
+        # tenere uno storico degli export senza sovrascriverli ogni volta.
+        dated_name = f"em_export_{_dt.datetime.now().strftime('%y%m%d')}.json"
+        out       = Path(hass.config.path(_EXPORT_SUBDIR, "em_export.json"))
+        out_dated = Path(hass.config.path(_EXPORT_SUBDIR, dated_name))
         n   = len(export["devices"])
 
         def _write():
             try:
                 out.parent.mkdir(parents=True, exist_ok=True)
-                with open(out, "w", encoding="utf-8") as f:
-                    _j.dump(export, f, indent=2, ensure_ascii=False)
+                payload = _j.dumps(export, indent=2, ensure_ascii=False)
+                out.write_text(payload, encoding="utf-8")
+                out_dated.write_text(payload, encoding="utf-8")
                 return True
             except Exception as e:
                 _LOGGER.error("[EM Export] Write error: %s", e)
@@ -164,15 +202,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
             lambda: out.stat().st_size if out.exists() else 0)
 
         if ok and file_exists:
-            _LOGGER.info("[EM Export] %d devices → %s (%d bytes)", n, out, file_size)
+            _LOGGER.info("[EM Export] %d devices → %s + %s (%d bytes)", n, out, out_dated, file_size)
             abs_path = await hass.async_add_executor_job(lambda: str(out.resolve()))
+            # FIX (HACS review @frenck, 2026-10-19): non più in /config/www
+            # (servita senza autenticazione su /local/) — il file va ora
+            # recuperato da un file manager/addon Samba sulla cartella
+            # /config, non da un URL pubblico.
             msg   = (f"✅ Export completato: **{n} device**\n\n"
                      f"📁 Percorso assoluto: `{abs_path}`\n"
                      f"📦 Dimensione: {file_size} bytes\n"
-                     f"🌐 Scaricabile da: `/local/em_export.json`\n\n"
-                     f"ℹ️ Se non vedi il file nel tuo file browser, "
-                     f"controlla che punti alla stessa cartella `/config` di HA. "
-                     f"Puoi anche scaricarlo dall'URL `/local/em_export.json`.")
+                     f"🗓️ Copia datata: `{_EXPORT_SUBDIR}/{dated_name}`\n\n"
+                     f"ℹ️ Il file NON è più accessibile da un URL pubblico "
+                     f"(per sicurezza): recuperalo con un file manager o "
+                     f"l'addon Samba, nella cartella `/config/{_EXPORT_SUBDIR}/`.")
             title = "Elettrodomestico Monitor — Export"
         else:
             _LOGGER.error("[EM Export] File NOT created! ok=%s exists=%s path=%s",
@@ -193,39 +235,56 @@ async def async_register_services(hass: HomeAssistant) -> None:
     })
 
     async def _import(call: ServiceCall):
-        """Import device configs from /config/www/em_export.json.
+        """Import device configs from /config/elettrodomestico_monitor/em_export.json.
         Updates existing devices (matched by slot) or creates new ones.
         """
         import json as _j
-        from pathlib import Path
 
-        filename = call.data.get("filename", "em_export.json")
-        src      = Path(hass.config.path("www", filename))
-
-        if not src.exists():
-            _LOGGER.error("[EM Import] File not found: %s", src)
+        raw_filename = call.data.get("filename", "em_export.json")
+        # FIX (HACS review @frenck, 2026-10-19 — CRITICO): 'filename' veniva
+        # unito al percorso senza alcun controllo, quindi un valore come
+        # '../../secrets.yaml' usciva dalla cartella di export. Accettiamo
+        # solo un nome file semplice (nessun separatore di percorso).
+        filename = _sanitize_filename(raw_filename)
+        if filename is None:
+            _LOGGER.error("[EM Import] filename non valido (deve essere un nome file semplice): %s", raw_filename)
             await hass.services.async_call("persistent_notification", "create", {
-                "message": f"❌ File non trovato: `/config/www/{filename}`\n\nEsegui prima l'Export.",
+                "message": (f"❌ Nome file non valido: `{raw_filename}`\n\n"
+                            f"Usa solo il nome del file (es. `em_export.json`), senza percorsi."),
                 "title":   "Elettrodomestico Monitor — Import Error",
                 "notification_id": "em_import",
             })
             return
 
+        src = Path(hass.config.path(_EXPORT_SUBDIR, filename))
+
         def _read():
+            # FIX (HACS review @frenck, 2026-10-19): src.exists() veniva
+            # chiamato direttamente nel coroutine async (I/O bloccante sul
+            # event loop). Spostato nell'executor insieme alla lettura.
+            if not src.exists():
+                raise FileNotFoundError(str(src))
             with open(src, encoding="utf-8") as f:
                 return _j.load(f)
 
         # FIX (audit v7.0.0, alto): un json.load senza gestione di
         # JSONDecodeError, e nessuna verifica che il file fosse un oggetto
         # con una chiave "devices" a lista, facevano crashare il servizio
-        # con un traceback opaco invece del messaggio d'errore già usato
-        # qualche riga sopra per il caso "file non trovato".
+        # con un traceback opaco invece di un messaggio d'errore leggibile.
         try:
             data = await hass.async_add_executor_job(_read)
+        except FileNotFoundError:
+            _LOGGER.error("[EM Import] File not found: %s", src)
+            await hass.services.async_call("persistent_notification", "create", {
+                "message": f"❌ File non trovato: `/config/{_EXPORT_SUBDIR}/{filename}`\n\nEsegui prima l'Export.",
+                "title":   "Elettrodomestico Monitor — Import Error",
+                "notification_id": "em_import",
+            })
+            return
         except Exception as ex:
             _LOGGER.error("[EM Import] File JSON non valido: %s — %s", src, ex)
             await hass.services.async_call("persistent_notification", "create", {
-                "message": (f"❌ File di import non valido: `/config/www/{filename}`\n\n"
+                "message": (f"❌ File di import non valido: `/config/{_EXPORT_SUBDIR}/{filename}`\n\n"
                             f"Errore: `{ex}`\n\nVerifica che sia un export "
                             f"generato da **export_config** e non sia stato modificato."),
                 "title":   "Elettrodomestico Monitor — Import Error",
@@ -236,7 +295,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         if not isinstance(data, dict) or not isinstance(data.get("devices"), list):
             _LOGGER.error("[EM Import] Struttura file inattesa (atteso oggetto con chiave 'devices' a lista): %s", src)
             await hass.services.async_call("persistent_notification", "create", {
-                "message": (f"❌ Struttura del file non valida: `/config/www/{filename}`\n\n"
+                "message": (f"❌ Struttura del file non valida: `/config/{_EXPORT_SUBDIR}/{filename}`\n\n"
                             f"Atteso un oggetto JSON con una chiave `devices` (lista).\n"
                             f"Verifica che sia un export generato da **export_config**."),
                 "title":   "Elettrodomestico Monitor — Import Error",
@@ -392,8 +451,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
     }
     for name, (handler, schema) in services.items():
         if not hass.services.has_service(DOMAIN, name):
-            hass.services.async_register(DOMAIN, name, handler, schema)
-            _LOGGER.debug("[EM] Service registered: %s.%s", DOMAIN, name)
+            # FIX (HACS review @frenck, 2026-10-19 — CRITICO): tutti questi
+            # servizi creano/modificano/eliminano config entry o esportano i
+            # dati di ogni device; registrati con async_register, erano
+            # richiamabili da QUALSIASI utente, non solo gli admin.
+            async_register_admin_service(hass, DOMAIN, name, handler, schema=schema)
+            _LOGGER.debug("[EM] Service registered (admin-only): %s.%s", DOMAIN, name)
 
 
 async def async_unregister_services(hass: HomeAssistant) -> None:

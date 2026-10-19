@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    config_flow.py
-# VERSION: 6.2.0
+# VERSION: 6.2.1
 # DESC:    Config flow — setup wizard for all device types including irrigation
 # CHANGED: 2026-07-22 (v6.2.1: validazione mancante di flow_sensor nello step
 #          irrigazione + controllo duplicati per entità di controllo — vacuum_
@@ -35,6 +35,7 @@ from .const import (
     CONF_WHATSAPP_ENTITY, CONF_AUTO_ON_TIME, CONF_AUTO_OFF_TIME,
     CONF_APPLIANCE_NAME, CONF_POWER_SENSOR, CONF_SWITCH_ENTITY,
     CONF_TRIGGER_ENTITY, CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR, CONF_VACUUM_RETURN_PCT,
+    DEFAULT_VACUUM_RETURN_PCT,
     CONF_WORK_THRESHOLD_W, CONF_TRIGGER_DELAY_M, CONF_START_DELAY_S,
     CONF_CUSTOM_MESSAGE, CONF_SOURCE_UNIT, CONF_TOTAL_UNIT,
     CONF_SCHEDULE_OVERRIDE, CONF_AUTO_ON_LOCAL, CONF_AUTO_OFF_LOCAL,
@@ -439,7 +440,7 @@ class ElettrodomesticoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_DEVICE_ICON,     default="mdi:robot-vacuum"):        _SEL_ICON,
                 vol.Required(CONF_VACUUM_ENTITY):                                       _SEL_VACUUM,
                 vol.Optional(CONF_BATTERY_SENSOR):                                     _SEL_SENSOR_OPT,
-                vol.Optional(CONF_VACUUM_RETURN_PCT, default=0):                       _SEL_PCT,
+                vol.Optional(CONF_VACUUM_RETURN_PCT, default=DEFAULT_VACUUM_RETURN_PCT):  _SEL_PCT,
                 vol.Optional(CONF_IMAGE_ON):                                            _image_selector_cached(_images),
                 vol.Optional(CONF_IMAGE_OFF):                                           _image_selector_cached(_images),
                 vol.Optional(CONF_TRIGGER_DELAY_M, default=float(DEFAULT_TRIGGER_DELAY_M)): _SEL_NUM_INT,
@@ -863,7 +864,7 @@ class VacuumOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_DEVICE_ICON,    default=c.get(CONF_DEVICE_ICON, "mdi:robot-vacuum")): _SEL_ICON,
                 vol.Required(CONF_VACUUM_ENTITY,  default=c.get(CONF_VACUUM_ENTITY, c.get(CONF_TRIGGER_ENTITY, ""))): _SEL_VACUUM,
                 _entity_schema_field(CONF_BATTERY_SENSOR, c.get(CONF_BATTERY_SENSOR)): _SEL_SENSOR_OPT,
-                vol.Optional(CONF_VACUUM_RETURN_PCT, default=c.get(CONF_VACUUM_RETURN_PCT, 0)): _SEL_PCT,
+                vol.Optional(CONF_VACUUM_RETURN_PCT, default=c.get(CONF_VACUUM_RETURN_PCT, DEFAULT_VACUUM_RETURN_PCT)): _SEL_PCT,
                 vol.Optional(CONF_IMAGE_ON,  default=c.get(CONF_IMAGE_ON, "")):  _image_selector_cached(_images),
                 vol.Optional(CONF_IMAGE_OFF, default=c.get(CONF_IMAGE_OFF, "")): _image_selector_cached(_images),
                 vol.Optional(CONF_TRIGGER_DELAY_M, default=c.get(CONF_TRIGGER_DELAY_M, DEFAULT_TRIGGER_DELAY_M)): _SEL_NUM_INT,

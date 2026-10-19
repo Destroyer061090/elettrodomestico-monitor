@@ -133,15 +133,33 @@ async def test_zone_turn_off_is_called_twice_but_harmlessly(hass):
     assert len(turn_off_z4) == 2
 
 
-async def test_cycle_time_is_not_double_counted(hass):
-    """FIX (audit v7.0.0, CRITICO): il tempo veniva accumulato sia dai tick
-    periodici di _async_update_data() (ogni COORDINATOR_UPDATE_INTERVAL,
-    mentre _cycle_active è True) sia una seconda volta nel blocco `finally`
-    di _run_cycle(), che ricalcolava e sommava elapsed_h dall'inizio del
-    ciclo — un ciclo di 10 minuti risultava conteggiato come ~20 in
-    "Tempo Oggi". Qui simuliamo 3 tick periodici durante un ciclo breve e
-    verifichiamo che il tempo finale rifletta SOLO i tick, senza un
-    ulteriore salto quando il ciclo termina."""
+async def test_cycle_time_accumulates_from_the_countdown_tick(hass, monkeypatch):
+    """FIX (audit v7.0.0, CRITICO — poi corretto in v7.0.2 dopo una
+    segnalazione reale dell'utente): il tempo veniva sommato sia dai tick
+    del coordinator sia una seconda volta nel blocco `finally` di
+    _run_cycle() — un ciclo di 10 minuti risultava conteggiato come ~20 in
+    "Tempo Oggi". Il primo fix (v7.0.0) spostava l'accumulo dentro
+    _async_update_data(), MA quel metodo non viene mai invocato davvero
+    durante un ciclo: _tick() (sotto, in _start_countdown) chiama
+    async_set_updated_data() una volta al secondo per l'intera durata
+    della zona, e async_set_updated_data() cancella/riprogramma il
+    refresh automatico del coordinator ad ogni chiamata — i 20s di
+    COORDINATOR_UPDATE_INTERVAL non trascorrono mai senza interruzioni.
+    Risultato reale osservato in produzione: "Tempo Oggi"/"Tempo Ieri"
+    fermi a 0min anche con cicli completati regolarmente (litri/kWh/cicli
+    restavano corretti, perché passano da _integrate()/_c_today, non dal
+    poll). Fix v7.0.2: il tempo si accumula nel tick al secondo stesso —
+    l'unico segnale che scatta davvero durante un ciclo. Qui rendiamo
+    async_call_later sincrono (invece di aspettare secondi reali) per
+    poter eseguire l'intera catena di tick in un test veloce."""
+    import custom_components.elettrodomestico_monitor.irrigation_coordinator as irr
+
+    def _sync_call_later(hass_, delay, action):
+        action(None)
+        return lambda: None
+
+    monkeypatch.setattr(irr, "async_call_later", _sync_call_later)
+
     coord = _make_coordinator(hass, [
         {"name": "Z", "switch": "switch.z8", "duration_min": 0.01},
     ])
@@ -150,19 +168,17 @@ async def test_cycle_time_is_not_double_counted(hass):
     async_mock_service(hass, "homeassistant", "turn_off")
 
     await coord.start_cycle()
-    # Simula 3 tick periodici del coordinator MENTRE il ciclo è attivo —
-    # nella realtà _async_update_data gira ogni COORDINATOR_UPDATE_INTERVAL
-    # indipendentemente dal task che sta eseguendo il ciclo.
-    for _ in range(3):
-        await coord._async_update_data()
-    t_from_ticks = coord._t_today
-    assert t_from_ticks > 0
+    await coord._cycle_task
 
-    await coord._cycle_task  # il ciclo termina (durata minima + sleep mockato)
-
-    # Il blocco finally NON deve sommare di nuovo il tempo trascorso reale:
-    # il totale dopo la fine del ciclo deve restare quello dei tick, non raddoppiare.
-    assert coord._t_today == t_from_ticks
+    # Durata minima di zona = 10s (clamp "max(10, ...)" in _run_cycle), quindi
+    # ci aspettiamo circa 10 tick da 1s: qualche minuto in meno di risoluzione
+    # di visualizzazione (_fmt arrotonda al minuto), ma il valore grezzo in
+    # ore deve essere chiaramente positivo — non più bloccato a zero.
+    # coord._cycle_task include già l'esecuzione del blocco finally: se
+    # questo sommasse di nuovo elapsed_h (il bug originale), il totale
+    # sarebbe circa il doppio (~20/3600h) e fallirebbe la tolleranza qui sotto.
+    assert coord._t_today > 0
+    assert abs(coord._t_today - 10 / 3600) < 1 / 3600  # ~10s, tolleranza 1s
 
 
 async def test_interrupted_cycle_is_not_counted(hass):

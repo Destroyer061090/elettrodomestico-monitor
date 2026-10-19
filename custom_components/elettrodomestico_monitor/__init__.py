@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.7.26
+# VERSION: 5.7.27
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
 # CHANGED: 2026-09-09 (v6.2.9: aggiunto CONFIG_SCHEMA — richiesto da hassfest
 #          per integrazioni che implementano async_setup; fix lint 'ex' non
@@ -26,6 +26,7 @@ from .device_coordinator import DeviceCoordinator
 from .update_coordinator import UpdateCheckCoordinator
 from .services import async_register_services, async_unregister_services
 from .migration import async_migrate_entry as _migrate
+from .hub import async_repair_push_targets
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -249,6 +250,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_HUB:
         hass.data[DOMAIN]["hub_entry_id"] = entry.entry_id
+        # FIX (segnalazione utente v7.0.3): auto-ripara i push_targets che
+        # puntano a un'entità notify non più esistente (es. app companion
+        # ri-registrata) — vedi hub.async_repair_push_targets per i dettagli.
+        try:
+            await async_repair_push_targets(hass, entry)
+        except Exception as ex:
+            _LOGGER.warning("[EM] Hub: push_targets repair failed: %s", ex)
         if "update_coordinator" not in hass.data[DOMAIN]:
             upd = UpdateCheckCoordinator(hass)
             try: await upd.async_config_entry_first_refresh()
@@ -277,9 +285,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _bootstrap_hub(hass, hub_data):
-    if _hub_exists(hass): return
-    await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "hub_import"}, data=hub_data)
+    # FIX (segnalazione utente v7.0.3, minore): questa funzione gira dentro
+    # un hass.async_create_task() non atteso dal chiamante — un'eccezione
+    # qui produrrebbe un "Task exception was never retrieved" non
+    # identificabile in log. Resa esplicitamente sicura, in linea con tutti
+    # gli altri task non attesi del componente.
+    try:
+        if _hub_exists(hass): return
+        await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "hub_import"}, data=hub_data)
+    except Exception as ex:
+        _LOGGER.warning("[EM] Hub bootstrap failed: %s", ex)
 
 
 async def _reload(hass, entry): await hass.config_entries.async_reload(entry.entry_id)

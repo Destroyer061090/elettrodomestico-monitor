@@ -235,5 +235,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "missing_push_targets": {
+      "title": "Push notification target not found",
+      "description": "The push target `{targets}` configured in the Global Hub no longer exists in Home Assistant (e.g. the companion app was re-registered with a new entity_id) and no equivalent `notify.mobile_app_*` entity was found to migrate it to automatically. Push notifications to this target are not being delivered. Go to **Settings → Devices & services → Elettrodomestico Monitor → Global Hub → Configure** and update the target with the correct one."
+    }
   }
 }

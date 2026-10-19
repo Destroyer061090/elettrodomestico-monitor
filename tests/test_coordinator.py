@@ -14,7 +14,7 @@ import time
 import datetime
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
 from custom_components.elettrodomestico_monitor.const import (
     CONF_ENTRY_TYPE,
@@ -24,6 +24,7 @@ from custom_components.elettrodomestico_monitor.const import (
     CONF_SLOT,
     CONF_SOURCE_UNIT,
     CONF_TRIGGER_ENTITY,
+    CONF_VACUUM_ENTITY,
     DOMAIN,
     ENTRY_TYPE_HUB,
 )
@@ -493,3 +494,73 @@ async def test_cycle_notification_shows_cycle_grid_split_not_daily_total(hass):
     assert notified["rete_cost"] == 0.0  # QUESTO ciclo non ha usato la rete
     assert notified["sole_cost"] == notified["cost"]  # tutto il costo del ciclo è solare
     assert round(notified["rete_cost"] + notified["sole_cost"], 2) == notified["cost"]  # ora tornano
+
+
+# ── _sw(): comando vacuum solo se il robot reale è disponibile ────────────────
+
+async def test_sw_vacuum_skips_command_when_robot_unavailable(hass, caplog):
+    """FIX (segnalazione utente v7.0.3): _sw() è un SECONDO punto (oltre a
+    vacuum.py._call_vacuum, corretto nello stesso fix) che può comandare il
+    vacuum reale — scatta sia dall'avvio manuale della card
+    (vacuum.py.async_start/async_return_to_base chiamano anche coord._sw)
+    sia dalla programmazione oraria dell'Hub/device (_sched_on/_sched_off)
+    — e bypassava completamente qualunque controllo di disponibilità. È la
+    spiegazione più plausibile per il comando vacuum segnalato dall'utente
+    senza traccia in nessuna automazione: con il robot 'unavailable'
+    (tipico per un robot Tuya/localtuya con WiFi o batteria scarica), il
+    comando non deve essere inoltrato."""
+    calls = async_mock_service(hass, "vacuum", "start")
+    hass.states.async_set("vacuum.k2", "unavailable")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "211", CONF_PRESET: "vacuum", CONF_VACUUM_ENTITY: "vacuum.k2",
+    }, "sw_vacuum_test")
+
+    await coord._sw("turn_on")
+
+    assert calls == []
+    assert "non disponibile" in caplog.text
+
+
+async def test_sw_vacuum_delivers_command_when_robot_available(hass):
+    """Non-regressione: col robot disponibile il comando deve continuare ad
+    essere inoltrato normalmente."""
+    calls = async_mock_service(hass, "vacuum", "start")
+    hass.states.async_set("vacuum.k2", "docked")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "211", CONF_PRESET: "vacuum", CONF_VACUUM_ENTITY: "vacuum.k2",
+    }, "sw_vacuum_test2")
+
+    await coord._sw("turn_on")
+
+    assert len(calls) == 1
+    assert calls[0].data.get("entity_id") == "vacuum.k2"
+
+
+# ── set_maintenance (revisione HACS @frenck) ──────────────────────────────────
+
+async def test_set_maintenance_accepts_a_note_without_raising(hass):
+    """FIX (revisione HACS @frenck, CRITICO): il servizio set_maintenance
+    chiama sempre coord.async_set_maintenance(note) (services.py), ma qui
+    il metodo non accettava alcun parametro — TypeError per ogni
+    elettrodomestico/clima/vacuum (irrigazione e batteria già avevano
+    'note'). Deve accettare una nota opzionale e salvarla senza eccezioni."""
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "1", CONF_PRESET: "elettrodomestico",
+    }, "maint_test")
+
+    await coord.async_set_maintenance("filtro sostituito")
+
+    assert coord.storage.data.get("maintenance_note") == "filtro sostituito"
+    assert coord.storage.data.get("maintenance_date")
+
+
+async def test_set_maintenance_works_with_no_note_too(hass):
+    """Non-regressione: il servizio può essere chiamato senza nota (uso
+    storico, prima che 'note' esistesse)."""
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "1", CONF_PRESET: "elettrodomestico",
+    }, "maint_test2")
+
+    await coord.async_set_maintenance()
+
+    assert coord.storage.data.get("maintenance_date")

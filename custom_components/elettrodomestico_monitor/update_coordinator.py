@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    update_coordinator.py
-# VERSION: 5.8.6
+# VERSION: 5.8.7
 # DESC:    Update coordinator — GitHub release checker
 # CHANGED: 2026-06-11
 # ============================================================
@@ -104,27 +104,13 @@ class UpdateCheckCoordinator(DataUpdateCoordinator):
             return
         title = "📦 Elettrodomestico Monitor"
         message = f"Aggiornamento disponibile: v{tag}"
-        for t in targets:
-            t = str(t).strip()
-            sent = False
-            try:
-                if self.hass.services.has_service("notify", "send_message"):
-                    await self.hass.services.async_call(
-                        "notify", "send_message",
-                        {"entity_id": t, "message": message, "title": title})
-                    sent = True
-            except Exception:
-                pass
-            if not sent:
-                svc = t.split(".", 1)[1] if "." in t else t
-                for cand in (svc, f"mobile_app_{svc}"):
-                    if self.hass.services.has_service("notify", cand):
-                        try:
-                            await self.hass.services.async_call(
-                                "notify", cand, {"message": message, "title": title})
-                            break
-                        except Exception as ex:
-                            _LOGGER.warning("Update notify failed (%s): %s", cand, ex)
+        # FIX (segnalazione utente v7.0.3): questa funzione duplicava la
+        # stessa logica (e lo stesso difetto) di notify_helper.async_send_push
+        # — stesso "sent=True" senza verificare che l'entità esista, e in più
+        # scartava le eccezioni con un `except: pass` senza nemmeno loggarle.
+        # Ora riusa l'unica implementazione condivisa.
+        from .notify_helper import async_send_push
+        await async_send_push(self.hass, targets, message, title, log_id="EM-Update")
         self._notified_version = tag
         _LOGGER.info("Update notification sent for v%s", tag)
 

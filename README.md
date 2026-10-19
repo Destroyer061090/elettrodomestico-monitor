@@ -5,7 +5,7 @@ elettrodomestici, climatizzatori, vacuum robot, impianti di irrigazione
 multi-zona e dispositivi a batteria, con supporto fotovoltaico e notifiche
 multi-canale.
 
-**Versione:** 7.0.1 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
+**Versione:** 7.0.4 | **HA minima:** 2024.11 | **Repository:** github.com/Destroyer061090/elettrodomestico-monitor
 
 ---
 
@@ -44,6 +44,16 @@ sistema unificato che misura, contabilizza e visualizza:
 > **Dashboard in modalità YAML:** la registrazione automatica delle risorse
 > Lovelace non è supportata da Home Assistant in questa modalità. Aggiungi
 > manualmente le tre risorse JavaScript indicate nel log (è normale, non è un errore).
+
+### Dipendenze della card
+
+La card Lovelace bundled (`elettrodomestico-monitor-card.js`) apre tutti i
+popup tramite **browser_mod** e usa **card-mod**, **multiple-entity-row**,
+**button-card** e **mini-graph-card** per la UI. Senza `browser_mod`
+installato, i pulsanti della card non fanno nulla (nessun errore visibile).
+Installa tutti questi componenti da HACS (categoria *Frontend*, tranne
+`browser_mod` che è sotto *Integration*) prima di usare la card.
+
 ---
 
 ## Architettura in breve

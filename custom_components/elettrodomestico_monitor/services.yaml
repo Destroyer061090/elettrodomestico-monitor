@@ -23,6 +23,12 @@ set_maintenance:
       required: true
       selector:
         text:
+    note:
+      name: Nota
+      description: Nota opzionale da associare alla manutenzione.
+      required: false
+      selector:
+        text:
 
 export_config:
   name: Esporta Configurazione

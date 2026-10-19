@@ -11,9 +11,14 @@ annunci vocali.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
+import logging
+
+from pytest_homeassistant_custom_component.common import async_mock_service
 
 from custom_components.elettrodomestico_monitor.notify_helper import (
+    async_send_push,
     in_notify_window,
 )
 
@@ -66,3 +71,88 @@ def test_00_00_window_disables_filtering():
     hub = _hub("00:00:00", "00:00:00")
     assert in_notify_window(hub, now=datetime.datetime(2026, 1, 1, 3, 0, 0)) is True
     assert in_notify_window(hub, now=datetime.datetime(2026, 1, 1, 15, 0, 0)) is True
+
+
+# ── async_send_push ───────────────────────────────────────────────────────────
+#
+# Nessun test prima di questa passata copriva async_send_push() (allora
+# _send_push, privata), dove viveva un bug critico segnalato da un utente
+# reale: notify.send_message è un dispatcher SEMPRE registrato in HA —
+# chiamarlo con un entity_id non più esistente (es. l'app companion iOS
+# ri-registrata con un nuovo entity_id) non solleva alcuna eccezione, quindi
+# il vecchio codice segnava "sent = True" e la notifica spariva in silenzio,
+# senza mai raggiungere i fallback funzionanti. Questi test coprono i 4 casi
+# richiesti: entità esistente, entità mancante con fallback mobile_app
+# (entità e servizio legacy), entità mancante senza alcun fallback.
+
+async def test_push_delivers_via_send_message_when_entity_exists(hass):
+    """Caso base: l'entità target esiste davvero → consegna diretta via
+    notify.send_message, nessun fallback necessario."""
+    calls = async_mock_service(hass, "notify", "send_message")
+    hass.states.async_set("notify.iphone_di_alessandro", "unknown")
+
+    await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
+
+    assert len(calls) == 1
+    assert calls[0].data.get("entity_id") == "notify.iphone_di_alessandro"
+    assert calls[0].data.get("message") == "msg"
+
+
+async def test_push_falls_back_to_mobile_app_entity_when_target_missing(hass, caplog):
+    """FIX (segnalazione utente v7.0.3, CRITICO): l'entità configurata non
+    esiste più (app companion ri-registrata) ma notify.mobile_app_<nome>
+    esiste sotto il nuovo nome — la notifica deve arrivare lì, non perdersi."""
+    caplog.set_level(logging.INFO)
+    calls = async_mock_service(hass, "notify", "send_message")
+    # notify.iphone_di_alessandro NON viene mai impostata: simula l'entità sparita.
+    hass.states.async_set("notify.mobile_app_iphone_di_alessandro", "unknown")
+
+    await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
+
+    assert len(calls) == 1
+    assert calls[0].data.get("entity_id") == "notify.mobile_app_iphone_di_alessandro"
+    assert "consegnato a" in caplog.text
+
+
+async def test_push_falls_back_to_legacy_mobile_app_service_when_target_missing(hass):
+    """Non-regressione: se esiste solo il SERVIZIO legacy
+    notify.mobile_app_<nome> (non l'entità), la consegna deve comunque
+    passare da lì — comportamento già presente prima di questo fix."""
+    legacy_calls = async_mock_service(hass, "notify", "mobile_app_iphone_di_alessandro")
+    # Nessuna entità notify.* impostata: né il target originale né l'entità mobile_app_*.
+
+    await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
+
+    assert len(legacy_calls) == 1
+    assert legacy_calls[0].data.get("message") == "msg"
+
+
+async def test_push_warns_without_raising_when_no_fallback_exists(hass, caplog):
+    """Destinatario mancante e nessuna alternativa trovata (né entità né
+    servizio legacy): deve solo loggare un warning, mai sollevare
+    un'eccezione — la causa originale del 'Task exception was never
+    retrieved' segnalato dall'utente."""
+    await async_send_push(hass, ["notify.destinatario_fantasma"], "msg", "title", "test")
+
+    assert "non trovato" in caplog.text
+
+
+async def test_push_times_out_without_hanging_on_slow_network(hass, caplog, monkeypatch):
+    """FIX (2026-10-16, incidente rete notturno — vedi CHANGELOG v7.0.3):
+    durante un'interruzione DNS/rete reale una chiamata notify.send_message
+    può restare "appesa" per molti secondi. Qui riduciamo il timeout a un
+    valore minuscolo e registriamo un servizio deliberatamente lento, per
+    verificare che async_send_push ritorni comunque (loggando un warning)
+    invece di restare bloccata o propagare l'eccezione di timeout."""
+    import custom_components.elettrodomestico_monitor.notify_helper as notify_helper
+    monkeypatch.setattr(notify_helper, "_NOTIFY_CALL_TIMEOUT_S", 0.05)
+
+    async def _slow_send_message(call):
+        await asyncio.sleep(2)
+
+    hass.services.async_register("notify", "send_message", _slow_send_message)
+    hass.states.async_set("notify.iphone_di_alessandro", "unknown")
+
+    await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
+
+    assert "oltre" in caplog.text

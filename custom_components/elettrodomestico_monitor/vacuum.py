@@ -1,6 +1,6 @@
 # ============================================================
 # FILE:    vacuum.py
-# VERSION: 5.7.26
+# VERSION: 5.7.28
 # DESC:    Vacuum platform — vacuum wrapper entity for vacuum preset devices
 # CHANGED: 2026-06-11
 # ============================================================
@@ -31,6 +31,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN, CONF_INSTANCE_ID, CONF_APPLIANCE_NAME, CONF_SLOT,
     CONF_VACUUM_ENTITY, CONF_BATTERY_SENSOR, CONF_VACUUM_RETURN_PCT,
+    DEFAULT_VACUUM_RETURN_PCT, VACUUM_INACTIVE_STATES,
     ENTRY_TYPE_HUB, CONF_ENTRY_TYPE, CONF_PRESET,
 )
 from .coordinator import ElettrodomesticoCoordinator
@@ -132,7 +133,12 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
         self._slot         = str(slot)
         self._vacuum_eid   = (entry.data.get(CONF_VACUUM_ENTITY) or "").strip()
         self._battery_eid  = (entry.data.get(CONF_BATTERY_SENSOR) or "").strip()
-        self._return_pct   = int(entry.data.get(CONF_VACUUM_RETURN_PCT, 0) or 0)
+        # FIX (segnalazione utente v7.0.3): usava 0 come fallback hardcoded
+        # invece della costante condivisa DEFAULT_VACUUM_RETURN_PCT — un
+        # device creato prima dell'introduzione di questo default (come
+        # quello segnalato) non ha mai salvato la chiave e restava quindi
+        # silenziosamente SENZA alcun rientro automatico per batteria scarica.
+        self._return_pct   = int(entry.data.get(CONF_VACUUM_RETURN_PCT, DEFAULT_VACUUM_RETURN_PCT) or 0)
         self._return_armed = True
         iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
 
@@ -205,7 +211,21 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
         # Only act if the robot is actually cleaning (not already docked/idle)
         vst = self.hass.states.get(self._vacuum_eid) if self._vacuum_eid else None
         state = vst.state if vst else None
-        if state not in ("cleaning", "running", "on"):
+        _LOGGER.debug("[Vacuum x%s] _check_battery_return: stato robot ricevuto = %r",
+                      self._slot, state)
+        # FIX (segnalazione utente v7.0.3): confrontava lo stato con
+        # un'allowlist fissa ("cleaning","running","on") case-sensitive — gli
+        # stessi stati non standard dei robot Tuya/cinesi (smart_cleaning,
+        # zone_cleaning, spot_cleaning, goto_target, ecc. — già gestiti
+        # altrove in questo file tramite VACUUM_INACTIVE_STATES, vedi
+        # `activity`) facevano SALTARE il rientro per batteria scarica
+        # proprio quando serviva di più: il robot restava "attivo" per la
+        # UI/contabilità ma il controllo qui non lo riconosceva come tale e
+        # non interveniva — coerente con la segnalazione "il robot muore
+        # durante la pulizia". Allineato alla stessa blocklist case-insensitive
+        # usata dal resto del file.
+        state_lower = (state or "").lower()
+        if not state_lower or state_lower in VACUUM_INACTIVE_STATES:
             return
         self._return_armed = False
         _LOGGER.info("[Vacuum x%s] Batteria %.0f%% <= soglia %.0f%% → rientro alla base",
@@ -224,8 +244,8 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
                 await notify(
                     f"Batteria al {level:.0f}% — rientro alla base",
                     self._device_name() if hasattr(self, "_device_name") else "Aspirapolvere")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.debug("[Vacuum x%s] battery-return notify failed: %s", self._slot, ex)
 
     # ── State ─────────────────────────────────────────────────────────────────
 
@@ -241,10 +261,29 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
             return _STATE_MAP[state_lower]
         # Unknown state: if it's not an inactive state, assume cleaning
         # (handles any future or non-standard Chinese robot states)
-        from .const import VACUUM_INACTIVE_STATES
         if state_lower not in VACUUM_INACTIVE_STATES:
             return VacuumActivity.CLEANING
         return VacuumActivity.IDLE
+
+    @property
+    def available(self) -> bool:
+        """Mirror the real vacuum's availability, not just the coordinator's.
+
+        FIX (segnalazione utente v7.0.3, D2): senza questo override
+        l'entità proxy EM restava "disponibile" in HA (ereditava il
+        default di CoordinatorEntity, legato a last_update_success del
+        coordinator EM — non del robot reale) anche quando self._vacuum_eid
+        era unavailable/unknown — automazioni e dashboard potevano
+        comandare un robot spento senza accorgersene. _on_vacuum_state()
+        qui sotto chiama già async_write_ha_state() ad ogni cambio di stato
+        del robot reale (incluse le transizioni da/verso unavailable),
+        quindi questa property viene rivalutata automaticamente senza
+        bisogno di altro aggancio.
+        """
+        if not self._vacuum_eid:
+            return True  # nessuna entità configurata: non c'è nulla da rispecchiare
+        st = self.hass.states.get(self._vacuum_eid)
+        return st is not None and st.state not in ("unavailable", "unknown")
 
     # battery_level removed — HA 2026.8 deprecated VacuumEntityFeature.BATTERY
     # Use sensor.batteria_vacuum_xN instead (created by sensor.py for vacuum preset)
@@ -276,6 +315,18 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
     async def _call_vacuum(self, service: str, **kwargs) -> None:
         if not self._vacuum_eid:
             _LOGGER.warning("No vacuum entity configured")
+            return
+        # FIX (segnalazione utente v7.0.3, D1): nessun controllo di
+        # disponibilità prima di inoltrare il comando — con il robot
+        # unavailable/unknown (tipico dei robot Tuya/localtuya con WiFi o
+        # batteria scarica), HA scriveva solo un warning generico
+        # ("Referenced entities ... are missing or not currently
+        # available") senza alcun riferimento a EM, e il comando si perdeva
+        # senza che il proxy segnalasse nulla.
+        st = self.hass.states.get(self._vacuum_eid)
+        if st is None or st.state in ("unavailable", "unknown"):
+            _LOGGER.info("[EM x%s] %s ignorato: %s non disponibile",
+                         self._slot, service, self._vacuum_eid)
             return
         try:
             await self.hass.services.async_call(
