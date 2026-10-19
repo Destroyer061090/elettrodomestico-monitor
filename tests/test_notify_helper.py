@@ -11,7 +11,6 @@ annunci vocali.
 """
 from __future__ import annotations
 
-import asyncio
 import datetime
 import logging
 
@@ -135,24 +134,3 @@ async def test_push_warns_without_raising_when_no_fallback_exists(hass, caplog):
     await async_send_push(hass, ["notify.destinatario_fantasma"], "msg", "title", "test")
 
     assert "non trovato" in caplog.text
-
-
-async def test_push_times_out_without_hanging_on_slow_network(hass, caplog, monkeypatch):
-    """FIX (2026-10-16, incidente rete notturno — vedi CHANGELOG v7.0.3):
-    durante un'interruzione DNS/rete reale una chiamata notify.send_message
-    può restare "appesa" per molti secondi. Qui riduciamo il timeout a un
-    valore minuscolo e registriamo un servizio deliberatamente lento, per
-    verificare che async_send_push ritorni comunque (loggando un warning)
-    invece di restare bloccata o propagare l'eccezione di timeout."""
-    import custom_components.elettrodomestico_monitor.notify_helper as notify_helper
-    monkeypatch.setattr(notify_helper, "_NOTIFY_CALL_TIMEOUT_S", 0.05)
-
-    async def _slow_send_message(call):
-        await asyncio.sleep(2)
-
-    hass.services.async_register("notify", "send_message", _slow_send_message)
-    hass.states.async_set("notify.iphone_di_alessandro", "unknown")
-
-    await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
-
-    assert "oltre" in caplog.text

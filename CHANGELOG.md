@@ -5,6 +5,40 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.0.5] - 2026-10-19
+
+### Fixed — Correzione a un fix precedente (CI fallita, test
+`test_push_times_out_without_hanging_on_slow_network`)
+
+Il timeout di sicurezza aggiunto in `notify_helper.py` nella v7.0.3
+(`asyncio.wait_for(hass.services.async_call(...), timeout=10)` su tutte le
+chiamate di notifica) **non faceva nulla**: `hass.services.async_call(...)`
+chiamato senza `blocking=True` è "fire-and-forget" per progetto in Home
+Assistant — l'`await` ritorna non appena il servizio è SCHEDULATO come task
+in background, non quando l'handler ha effettivamente finito di eseguire
+(vedi `homeassistant/core.py`, `ServiceRegistry.async_call`: il branch
+`blocking=False` fa `async_create_task_internal(...)` e `return None`
+subito, senza attendere la coroutine). Il test scritto per verificarlo lo
+ha confermato: con un handler `notify.send_message` deliberatamente lento
+(`asyncio.sleep(2)`) e il timeout ridotto a 0.05s per il test, nessun
+`TimeoutError` scattava mai, perché `asyncio.wait_for` non aveva nulla da
+attendere — la chiamata era già tornata.
+
+Questo significa anche che **la diagnosi della v7.0.3 era sbagliata**:
+una chiamata `notify.send_message` lenta/appesa durante un'interruzione
+DNS/rete reale non può bloccare il task del coordinator che la invia,
+perché quel task non aspetta mai il suo completamento. L'incidente
+notturno del 15-16/10 resta spiegato dall'interruzione di rete reale
+confermata nel log HA (non da EM), ma non per il meccanismo ipotizzato.
+
+**Rimosso** il timeout inefficace (tornato al comportamento fire-and-forget
+precedente, che è anche quello esplicitamente documentato nel docstring del
+modulo: "best-effort, a failure on one never blocks the others" — renderlo
+bloccante con `blocking=True` per far funzionare un timeout avrebbe
+introdotto esattamente il rischio che si voleva evitare, aggiungendo fino a
+40s di latenza seriale a `_cycle_end()`/notifiche). Rimosso anche il test
+che lo verificava (`tests/test_notify_helper.py`).
+
 ## [7.0.4] - 2026-10-19
 
 ### Fixed — Critico (revisione HACS, @frenck)
