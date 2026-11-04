@@ -239,7 +239,7 @@
   "issues": {
     "missing_push_targets": {
       "title": "Push notification target not found",
-      "description": "The push target `{targets}` configured in the Global Hub does not exist as an entity in Home Assistant (e.g. the companion app was re-registered with a new entity_id). Push notifications to this target are not being delivered. Go to **Settings → Devices & services → Elettrodomestico Monitor → Global Hub → Configure**, then open **Settings → Devices & services → Entities** and search for the device name to find the correct entity_id (e.g. `notify.<device_name>`), and update the target with it."
+      "description": "The push target `{targets}` configured in the Global Hub does not exist as an entity in Home Assistant (e.g. the companion app was re-registered with a new entity_id). Push notifications to this target are not being delivered. Go to **Settings → Devices & services → Elettrodomestico Monitor → Global Hub → Configure**, then open **Settings → Devices & services → Entities** and search for the device name to find the correct entity_id (e.g. `notify.your_device_name`), and update the target with it."
     }
   }
 }
