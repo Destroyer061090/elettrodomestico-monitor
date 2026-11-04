@@ -1,8 +1,12 @@
 # ============================================================
 # FILE:    vacuum.py
-# VERSION: 5.7.28
+# VERSION: 7.0.7
 # DESC:    Vacuum platform — vacuum wrapper entity for vacuum preset devices
 # CHANGED: 2026-06-11
+# CHANGED: 2026-10-21 (v7.0.7: _call_vacuum delega il controllo di
+#          disponibilità a entity_call.async_call_if_available — stesso
+#          comportamento, ora condiviso con tutti gli altri chiamanti.
+#          Vedi CHANGELOG.md)
 # ============================================================
 """Vacuum platform for Elettrodomestico Monitor v16.
 
@@ -35,6 +39,7 @@ from .const import (
     ENTRY_TYPE_HUB, CONF_ENTRY_TYPE, CONF_PRESET,
 )
 from .coordinator import ElettrodomesticoCoordinator
+from .entity_call import async_call_if_available
 from .naming import entity_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -316,25 +321,16 @@ class _VacuumEntity(CoordinatorEntity, StateVacuumEntity):
         if not self._vacuum_eid:
             _LOGGER.warning("No vacuum entity configured")
             return
-        # FIX (segnalazione utente v7.0.3, D1): nessun controllo di
-        # disponibilità prima di inoltrare il comando — con il robot
-        # unavailable/unknown (tipico dei robot Tuya/localtuya con WiFi o
-        # batteria scarica), HA scriveva solo un warning generico
-        # ("Referenced entities ... are missing or not currently
-        # available") senza alcun riferimento a EM, e il comando si perdeva
-        # senza che il proxy segnalasse nulla.
-        st = self.hass.states.get(self._vacuum_eid)
-        if st is None or st.state in ("unavailable", "unknown"):
-            _LOGGER.info("[EM x%s] %s ignorato: %s non disponibile",
-                         self._slot, service, self._vacuum_eid)
-            return
-        try:
-            await self.hass.services.async_call(
-                "vacuum", service,
-                {"entity_id": self._vacuum_eid, **kwargs},
-            )
-        except Exception as ex:
-            _LOGGER.error("vacuum.%s failed: %s", service, ex)
+        # FIX (segnalazione utente v7.0.3, D1; centralizzato in v7.0.7 —
+        # vedi entity_call.py): nessun controllo di disponibilità prima di
+        # inoltrare il comando — con il robot unavailable/unknown (tipico
+        # dei robot Tuya/localtuya con WiFi o batteria scarica), HA
+        # scriveva solo un warning generico ("Referenced entities ... are
+        # missing or not currently available") senza alcun riferimento a
+        # EM, e il comando si perdeva senza che il proxy segnalasse nulla.
+        await async_call_if_available(
+            self.hass, "vacuum", service, self._vacuum_eid, kwargs,
+            log_id=f"EM x{self._slot}")
 
     async def async_start(self) -> None:
         # Also notify coordinator so cycle tracking starts

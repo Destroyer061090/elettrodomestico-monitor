@@ -1,8 +1,11 @@
 # ============================================================
 # FILE:    button.py
-# VERSION: 5.7.22
+# VERSION: 7.1.0
 # DESC:    Button platform — reset counters, set maintenance
 # CHANGED: 2026-06-11
+# CHANGED: 2026-11-04 (v7.1.0: docstring import aggiornata al percorso di
+#          export corrente, /config/elettrodomestico_monitor/ — rimasta
+#          ferma a /config/www/ dalla v7.0.4. Vedi CHANGELOG.md)
 # ============================================================
 """Button platform for Elettrodomestico Monitor.
 
@@ -156,7 +159,7 @@ class _HubExportButton(ButtonEntity):
 
 
 class _HubImportButton(ButtonEntity):
-    """Importa la configurazione da /config/www/em_export.json."""
+    """Importa la configurazione da /config/elettrodomestico_monitor/em_export.json."""
     def __init__(self, hass, entry):
         self._hass = hass
         self._attr_unique_id       = f"{DOMAIN}_hub_import"

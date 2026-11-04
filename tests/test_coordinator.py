@@ -23,6 +23,7 @@ from custom_components.elettrodomestico_monitor.const import (
     CONF_PRESET,
     CONF_SLOT,
     CONF_SOURCE_UNIT,
+    CONF_SWITCH_ENTITY,
     CONF_TRIGGER_ENTITY,
     CONF_VACUUM_ENTITY,
     DOMAIN,
@@ -564,3 +565,72 @@ async def test_set_maintenance_works_with_no_note_too(hass):
     await coord.async_set_maintenance()
 
     assert coord.storage.data.get("maintenance_date")
+
+
+# ── _sw(): disponibilità per switch/clima/trigger generico (v7.0.7) ──────────
+#
+# FIX (segnalazione utente, 2026-10-21): solo il ramo vacuum di _sw() aveva
+# un controllo di disponibilità (v7.0.3) — con uno switch offline (es. il
+# device "(x18) Carica_iPhone_Ale" che comanda switch.100118d6db_1,
+# permanentemente non disponibile), HA scriveva solo un warning generico
+# senza alcun riferimento a EM. Centralizzato con entity_call.py.
+
+async def test_sw_switch_skips_command_when_entity_unavailable(hass, caplog):
+    """Il device ha uno switch_entity configurato, ma l'entità reale è
+    'unavailable' — il comando non deve essere inoltrato, solo un log INFO
+    con prefisso [EM x<slot>]."""
+    calls = async_mock_service(hass, "switch", "turn_on")
+    hass.states.async_set("switch.100118d6db_1", "unavailable")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "18", CONF_PRESET: "elettrodomestico", CONF_SWITCH_ENTITY: "switch.100118d6db_1",
+    }, "sw_switch_test")
+
+    await coord._sw("turn_on")
+
+    assert calls == []
+    assert "[EM x18]" in caplog.text and "non disponibile" in caplog.text
+
+
+async def test_sw_switch_delivers_command_when_entity_available(hass):
+    """Non-regressione: con lo switch disponibile il comando deve
+    continuare ad essere inoltrato normalmente."""
+    calls = async_mock_service(hass, "switch", "turn_on")
+    hass.states.async_set("switch.presa_ok", "off")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "1", CONF_PRESET: "elettrodomestico", CONF_SWITCH_ENTITY: "switch.presa_ok",
+    }, "sw_switch_test2")
+
+    await coord._sw("turn_on")
+
+    assert len(calls) == 1
+    assert calls[0].data.get("entity_id") == "switch.presa_ok"
+
+
+async def test_sw_trigger_entity_skips_command_when_unavailable(hass, caplog):
+    """Nessun switch_entity configurato, solo un trigger_entity generico
+    (es. input_boolean) — stesso controllo di disponibilità anche qui."""
+    calls = async_mock_service(hass, "homeassistant", "turn_on")
+    hass.states.async_set("input_boolean.fantasma", "unavailable")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "1", CONF_PRESET: "elettrodomestico", CONF_TRIGGER_ENTITY: "input_boolean.fantasma",
+    }, "sw_trigger_test")
+
+    await coord._sw("turn_on")
+
+    assert calls == []
+    assert "non disponibile" in caplog.text
+
+
+async def test_sw_clima_skips_command_when_unavailable(hass, caplog):
+    """Device clima con trigger_entity (il climate.* reale) non
+    disponibile — set_hvac_mode non deve essere inoltrato."""
+    calls = async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.states.async_set("climate.fantasma", "unavailable")
+    coord = _make_coordinator(hass, {
+        CONF_SLOT: "1", CONF_PRESET: "clima", CONF_TRIGGER_ENTITY: "climate.fantasma",
+    }, "sw_clima_test")
+
+    await coord._sw("turn_off")
+
+    assert calls == []
+    assert "non disponibile" in caplog.text

@@ -1,9 +1,11 @@
 # ============================================================
 # FILE:    climate.py
-# VERSION: 5.7.8
+# VERSION: 7.0.7
 # DESC:    Climate platform — wrapper entity for clima preset devices
 # CHANGED: 2026-09-09 (v6.2.9: fix lint — rimossa la definizione duplicata di
 #          current_temperature. Vedi CHANGELOG.md)
+# CHANGED: 2026-10-21 (v7.0.7: _call_climate salta il comando se il climate
+#          reale non è disponibile. Vedi CHANGELOG.md)
 # ============================================================
 """Climate platform for Elettrodomestico Monitor v26.
 
@@ -38,6 +40,7 @@ from .const import (
     ENTRY_TYPE_HUB, CONF_ENTRY_TYPE,
 )
 from .coordinator import ElettrodomesticoCoordinator
+from .entity_call import async_call_if_available
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -156,6 +159,7 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     def __init__(self, coord, entry, name, slot, clima_eid):
         super().__init__(coord)
         self._entry     = entry
+        self._slot      = slot
         self._clima_eid = clima_eid
 
         iid = entry.data.get(CONF_INSTANCE_ID, str(entry.data.get(CONF_SLOT, "1")))
@@ -340,11 +344,14 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     async def _call_climate(self, service: str, data: dict) -> None:
-        data["entity_id"] = self._clima_eid
-        try:
-            await self.hass.services.async_call("climate", service, data)
-        except Exception as ex:
-            _LOGGER.error("[EM Clima] climate.%s failed: %s", service, ex)
+        # FIX (segnalazione utente, 2026-10-21): nessun controllo di
+        # disponibilità prima di inoltrare il comando al climate reale —
+        # stesso identico problema già corretto per il vacuum (v7.0.3).
+        # Vedi entity_call.py.
+        data.pop("entity_id", None)
+        await async_call_if_available(
+            self.hass, "climate", service, self._clima_eid, data,
+            log_id=f"EM x{self._slot}")
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         await self._call_climate("set_hvac_mode", {"hvac_mode": hvac_mode})

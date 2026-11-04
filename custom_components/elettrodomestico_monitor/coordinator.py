@@ -1,12 +1,14 @@
 # ============================================================
 # FILE:    coordinator.py
-# VERSION: 7.0.4
+# VERSION: 7.0.7
 # DESC:    Main coordinator — data update, power sharing, cycle tracking, notifications
 # CHANGED: 2026-07-28 (v6.2.4: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo.
 #          Vedi CHANGELOG.md)
 # CHANGED: 2026-10-19 (v7.0.4: async_set_maintenance accetta 'note' —
 #          revisione HACS @frenck, vedi CHANGELOG.md)
+# CHANGED: 2026-10-21 (v7.0.7: _sw() usa entity_call.async_call_if_available
+#          su tutti i rami, non solo vacuum. Vedi CHANGELOG.md)
 # ============================================================
 """Coordinator for Elettrodomestico Monitor v9.
 
@@ -56,6 +58,7 @@ from .const import (
     DEFAULT_THRESHOLD_W, DEFAULT_TRIGGER_DELAY_M, DEFAULT_START_DELAY_S,
     DEFAULT_SCHEDULE,
 )
+from .entity_call import async_call_if_available
 from .hub import get_hub_config
 from .notify_helper import async_send_notification
 from .presets import get_preset
@@ -900,26 +903,23 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
 
     async def _sw(self, action: str) -> None:
         is_on = (action == "turn_on")
+        # FIX (segnalazione utente v7.0.3 per il ramo vacuum, esteso a TUTTI
+        # i rami in v7.0.7 — vedi entity_call.py): ogni ramo qui sotto
+        # comanda un'entità esterna configurata dall'utente, che può essere
+        # offline. Solo il ramo vacuum aveva un controllo di disponibilità;
+        # con uno switch/clima/trigger offline (es. uno smart plug
+        # scollegato), HA scriveva solo un warning generico senza alcun
+        # riferimento a EM ("Referenced entities ... are missing or not
+        # currently available") — segnalato concretamente dall'utente per
+        # switch.100118d6db_1 (device "Carica_iPhone_Ale"). Centralizzato
+        # con lo stesso helper già usato da vacuum.py._call_vacuum.
 
         if self._is_vacuum:
             vac = (self.config.get(CONF_VACUUM_ENTITY) or self._trigger_entity or "").strip()
             if not vac: return
-            # FIX (segnalazione utente v7.0.3): questo è un SECONDO punto
-            # (indipendente da vacuum.py._call_vacuum) che può comandare il
-            # vacuum — scatta quando il Hub/device ha un orario
-            # auto_on_time/auto_off_time configurato (_sched_on/_sched_off),
-            # bypassando completamente l'entità proxy e il suo controllo di
-            # disponibilità. È la spiegazione più plausibile per un comando
-            # vacuum senza traccia in nessuna automazione utente. Stesso
-            # controllo di vacuum.py._call_vacuum.
-            st = self.hass.states.get(vac)
-            if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                _LOGGER.info("[%s] vacuum %s ignorato: %s non disponibile",
-                             self.instance_id, action, vac)
-                return
             svc = "start" if is_on else "return_to_base"
-            try: await self.hass.services.async_call("vacuum", svc, {"entity_id": vac})
-            except Exception as ex: _LOGGER.warning("[%s] vacuum.%s failed: %s", self.instance_id, svc, ex)
+            await async_call_if_available(
+                self.hass, "vacuum", svc, vac, log_id=f"EM x{self.slot}")
             return
 
         if self._is_clima:
@@ -940,20 +940,21 @@ class ElettrodomesticoCoordinator(DataUpdateCoordinator):
             else:
                 mode = "off"
             _LOGGER.info("[%s] Clima: set_hvac_mode → %s (%s)", self.instance_id, mode, eid)
-            try: await self.hass.services.async_call(
-                    "climate", "set_hvac_mode", {"entity_id": eid, "hvac_mode": mode})
-            except Exception as ex: _LOGGER.warning("[%s] climate.set_hvac_mode(%s) failed: %s", self.instance_id, mode, ex)
+            await async_call_if_available(
+                self.hass, "climate", "set_hvac_mode", eid,
+                {"hvac_mode": mode}, log_id=f"EM x{self.slot}")
             return
 
         sw = (self.config.get(CONF_SWITCH_ENTITY) or "").strip()
         if sw:
-            try: await self.hass.services.async_call("switch", action, {"entity_id": sw})
-            except Exception as ex: _LOGGER.warning("[%s] switch.%s failed: %s", self.instance_id, action, ex)
+            await async_call_if_available(
+                self.hass, "switch", action, sw, log_id=f"EM x{self.slot}")
             return
 
         if self._trigger_entity:
-            try: await self.hass.services.async_call("homeassistant", action, {"entity_id": self._trigger_entity})
-            except Exception as ex: _LOGGER.warning("[%s] homeassistant.%s failed: %s", self.instance_id, action, ex)
+            await async_call_if_available(
+                self.hass, "homeassistant", action, self._trigger_entity,
+                log_id=f"EM x{self.slot}")
 
     @callback
     def _on_switch(self, event):

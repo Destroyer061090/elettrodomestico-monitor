@@ -78,6 +78,11 @@ async def test_zones_activate_in_configured_order(hass):
         {"name": "Siepe", "switch": "switch.z2", "duration_min": 0.01},
     ], zone_order=[1, 0])  # ordine invertito rispetto alla definizione
     await coord.storage.async_load()
+    # FIX (v7.0.7): i comandi alla zona ora vengono saltati se lo switch
+    # non è disponibile/esistente — gli switch delle zone devono esistere
+    # per questo test (che verifica l'ORDINE, non la disponibilità).
+    hass.states.async_set("switch.z1", "off")
+    hass.states.async_set("switch.z2", "off")
 
     turn_on_calls = async_mock_service(hass, "homeassistant", "turn_on")
 
@@ -99,6 +104,7 @@ async def test_manual_start_does_not_reissue_turn_on(hass):
         {"name": "Orto", "switch": "switch.z3", "duration_min": 0.01},
     ])
     await coord.storage.async_load()
+    hass.states.async_set("switch.z3", "on")  # FIX (v7.0.7): deve esistere
 
     turn_on_calls = async_mock_service(hass, "homeassistant", "turn_on")
     turn_off_calls = async_mock_service(hass, "homeassistant", "turn_off")
@@ -123,6 +129,7 @@ async def test_zone_turn_off_is_called_twice_but_harmlessly(hass):
         {"name": "Orto", "switch": "switch.z4", "duration_min": 0.01},
     ])
     await coord.storage.async_load()
+    hass.states.async_set("switch.z4", "off")  # FIX (v7.0.7): deve esistere
 
     turn_off_calls = async_mock_service(hass, "homeassistant", "turn_off")
 
@@ -131,6 +138,32 @@ async def test_zone_turn_off_is_called_twice_but_harmlessly(hass):
 
     turn_off_z4 = [c for c in turn_off_calls if c.data.get("entity_id") == "switch.z4"]
     assert len(turn_off_z4) == 2
+
+
+async def test_zone_switch_unavailable_skips_command(hass, caplog):
+    """FIX (segnalazione utente, 2026-10-21): lo switch della zona
+    'unavailable' (es. una valvola Zigbee scollegata) non deve ricevere
+    comandi — solo un log INFO con prefisso [IRR <instance_id>], mai il
+    warning generico di HA. Il ciclo deve comunque completarsi (litri/kWh/
+    cicli non dipendono dal comando switch)."""
+    coord = _make_coordinator(hass, [
+        {"name": "Orto", "switch": "switch.z_offline", "duration_min": 0.01},
+    ])
+    await coord.storage.async_load()
+    hass.states.async_set("switch.z_offline", "unavailable")
+
+    turn_on_calls = async_mock_service(hass, "homeassistant", "turn_on")
+    turn_off_calls = async_mock_service(hass, "homeassistant", "turn_off")
+
+    await coord.start_cycle()
+    await coord._cycle_task
+
+    assert turn_on_calls == []
+    assert turn_off_calls == []
+    assert "[IRR" in caplog.text and "non disponibile" in caplog.text
+    # Il ciclo deve comunque essere contato come completato: il comando
+    # switch saltato non è un errore del ciclo stesso.
+    assert coord._c_today == 1
 
 
 async def test_cycle_time_accumulates_from_the_countdown_tick(hass, monkeypatch):
@@ -164,6 +197,7 @@ async def test_cycle_time_accumulates_from_the_countdown_tick(hass, monkeypatch)
         {"name": "Z", "switch": "switch.z8", "duration_min": 0.01},
     ])
     await coord.storage.async_load()
+    hass.states.async_set("switch.z8", "off")  # FIX (v7.0.7): deve esistere
     async_mock_service(hass, "homeassistant", "turn_on")
     async_mock_service(hass, "homeassistant", "turn_off")
 
@@ -189,6 +223,7 @@ async def test_interrupted_cycle_is_not_counted(hass):
         {"name": "Prato", "switch": "switch.z5", "duration_min": 5},  # durata lunga
     ])
     await coord.storage.async_load()
+    hass.states.async_set("switch.z5", "off")  # FIX (v7.0.7): deve esistere
 
     async_mock_service(hass, "homeassistant", "turn_on")
     async_mock_service(hass, "homeassistant", "turn_off")

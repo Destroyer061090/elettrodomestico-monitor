@@ -1,8 +1,12 @@
 # ============================================================
 # FILE:    hub.py
-# VERSION: 5.9.0
+# VERSION: 7.0.7
 # DESC:    Hub config reader — global settings (costs, notify, schedule)
 # CHANGED: 2026-06-11
+# CHANGED: 2026-10-21 (v7.0.7: rimossa la "migrazione automatica" a
+#          notify.mobile_app_<nome> — era un servizio, non un'entità,
+#          controllarlo con hass.states.get() non funzionava mai nella
+#          pratica. Vedi CHANGELOG.md)
 # ============================================================
 """Hub helper — reads global configuration and resolves costs live."""
 from __future__ import annotations
@@ -101,18 +105,38 @@ def get_hub_config(hass: HomeAssistant) -> dict[str, Any]:
 
 
 async def async_repair_push_targets(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Auto-heal push_targets that reference a notify entity which no
-    longer exists (e.g. the iOS/Android companion app re-registered under a
-    new entity_id after a reinstall) — migrate to notify.mobile_app_<name>
-    if that entity now exists, otherwise raise a Repair issue so the user
-    knows a target is silently undeliverable instead of discovering it only
-    when a notification never arrives.
+    """Flag push_targets that reference a notify entity which no longer
+    exists (e.g. the iOS/Android companion app re-registered under a new
+    entity_id after a reinstall), via a Repair issue, so the user knows a
+    target is silently undeliverable instead of discovering it only when
+    a notification never arrives.
 
     FIX (segnalazione utente v7.0.3): un push_target non più valido veniva
     perso in silenzio da notify_helper.async_send_push (vedi quel modulo)
     senza che l'utente venisse mai avvisato che quel destinatario non
-    arriva più a destinazione. Chiamata una volta ad ogni avvio/reload
-    dell'Hub — economica e idempotente, non va ripetuta ad ogni poll.
+    arriva più a destinazione.
+
+    FIX (segnalazione utente, 2026-10-21 — CORREZIONE a v7.0.3): la prima
+    versione, qui sotto, tentava di auto-migrare un target mancante
+    cercando in hass.states un'entità chiamata "notify.mobile_app_<nome>".
+    Ma notify.mobile_app_<nome> è il SERVIZIO legacy (richiamabile via
+    hass.services, SENZA alcun stato associato) — non un'entità. Sono due
+    oggetti diversi: controllarne l'esistenza con hass.states.get() non
+    trova quasi mai nulla in una Home Assistant reale, quindi quella
+    "migrazione automatica" in pratica non scattava mai, e nel caso
+    (teorico) in cui un'entità con quel nome esatto fosse esistita per un
+    motivo non collegato, avrebbe scritto in CONF_PUSH_TARGETS un valore
+    non realmente verificato come notify valido. Rimosso del tutto: un
+    target mancante produce SEMPRE e SOLO una Repair issue, mai un
+    tentativo di indovinare il nome giusto — l'utente deve confermare lui
+    stesso l'entity_id corretto (Impostazioni → Entità). Il fallback al
+    servizio legacy (quello corretto, verificato con
+    hass.services.has_service) resta SOLO al momento dell'invio, in
+    notify_helper.async_send_push — non va mai scritto qui in
+    configurazione.
+
+    Chiamata una volta ad ogni avvio/reload dell'Hub — economica e
+    idempotente, non va ripetuta ad ogni poll.
     """
     targets = [str(t).strip() for t in (entry.data.get(CONF_PUSH_TARGETS) or []) if str(t).strip()]
     issue_id = f"{_ISSUE_MISSING_PUSH}_{entry.entry_id}"
@@ -121,34 +145,10 @@ async def async_repair_push_targets(hass: HomeAssistant, entry: ConfigEntry) -> 
         ir.async_delete_issue(hass, DOMAIN, issue_id)
         return
 
-    fixed: list[str] = []
-    missing: list[str] = []
-    changed = False
-
-    for t in targets:
-        if hass.states.get(t) is not None:
-            fixed.append(t)
-            continue
-        svc_name = t.split(".", 1)[1] if "." in t else t
-        candidate = f"notify.mobile_app_{svc_name}"
-        if candidate != t and hass.states.get(candidate) is not None:
-            fixed.append(candidate)
-            changed = True
-            _LOGGER.info(
-                "[EM] Hub: push_target '%s' non trovato — migrato automaticamente a '%s'",
-                t, candidate)
-        else:
-            fixed.append(t)  # keep the stale value — never silently drop user config
-            missing.append(t)
-
-    if changed:
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_PUSH_TARGETS: fixed})
+    missing = [t for t in targets if hass.states.get(t) is None]
 
     if missing:
-        _LOGGER.warning(
-            "[EM] Hub: push_target non trovato e senza alternativa automatica: %s",
-            ", ".join(missing))
+        _LOGGER.warning("[EM] Hub: push_target non trovato: %s", ", ".join(missing))
         ir.async_create_issue(
             hass, DOMAIN, issue_id,
             is_fixable=False,

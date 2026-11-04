@@ -16,7 +16,7 @@ corretto sia quello che ha rivelato il bug.
 from __future__ import annotations
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
 from custom_components.elettrodomestico_monitor.const import (
     CONF_DEV_BATTERY_SENSOR,
@@ -130,3 +130,22 @@ async def test_equal_thresholds_are_also_rejected(hass):
 
     assert coord._charging is False
     assert coord._c_today == 0
+
+
+async def test_charge_switch_unavailable_skips_command(hass, caplog):
+    """FIX (segnalazione utente, 2026-10-21): lo switch di ricarica
+    permanentemente 'unavailable' (caso reale segnalato: switch.100118d6db_1,
+    device '(x18) Carica_iPhone_Ale') non deve ricevere comandi — solo un
+    log INFO con prefisso [DEV x<slot>], mai il warning generico di HA su
+    un'entità mancante."""
+    calls = async_mock_service(hass, "homeassistant", "turn_on")
+    coord = _make_coordinator(hass, start_pct=20, stop_pct=80, instance_id="dev_offline")
+    await coord.async_init()
+    hass.states.async_set("switch.ricarica_auto_dispositivo_x1", "on")
+    hass.states.async_set("sensor.batt_dev_offline", "15")
+    hass.states.async_set("switch.charge_dev_offline", "unavailable")
+
+    await coord._async_update_data()
+
+    assert calls == []
+    assert "[DEV x1]" in caplog.text and "non disponibile" in caplog.text

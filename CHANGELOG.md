@@ -5,6 +5,248 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.1.0] - 2026-11-04
+
+### Fixed — Minore (revisione HACS @frenck, approvazione v7.0.5)
+
+Nel commento di approvazione della v7.0.5, @frenck ha segnalato un ultimo
+dettaglio rimasto indietro: la descrizione del servizio `export_config`
+in `services.yaml` (righe 36-37) diceva ancora che l'export va in
+`/config/www/em_export.json`, scaricabile da `/local/em_export.json` — il
+percorso prima del fix v7.0.4, che lo aveva spostato in
+`/config/elettrodomestico_monitor/` per sicurezza (quella cartella non è
+servita via URL pubblico). Testo non aggiornato in quel passaggio.
+
+- **`services.yaml`**: descrizione di `export_config` corretta al
+  percorso attuale.
+- **`button.py`**, docstring di `_HubImportButton` (stesso riferimento
+  stantio, trovato verificando se ce ne fossero altri): corretta allo
+  stesso percorso.
+
+## [7.0.9] - 2026-10-29
+
+### Fixed — Critico, correzione al fix v7.0.8 (bug report dettagliato)
+
+Il fix v7.0.8 per il RuntimeError sulla registrazione della risorsa
+Lovelace aveva introdotto un bug nuovo, segnalato con un bug report
+dettagliato:
+```
+calls hass.async_create_task from a thread other than the event loop
+coroutine '_register_lovelace_resource_safely' was never awaited
+```
+**Causa**: il rinvio a `EVENT_HOMEASSISTANT_STARTED` usava
+`hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _event:
+hass.async_create_task(...))`. Una lambda sync non è né una coroutine né
+marcata `@callback` — Home Assistant esegue questo tipo di listener in un
+thread dell'executor (per sicurezza, nel caso facesse I/O bloccante).
+Chiamare `hass.async_create_task` da quel thread non è thread-safe: HA lo
+segnala e solleva un'eccezione, la coroutine non viene mai attesa, e la
+risorsa della card non viene mai registrata — l'esatto opposto
+dell'obiettivo del fix precedente.
+
+- **`__init__.py`, `async_setup`**: sostituito l'intero meccanismo
+  `hass.bus.async_listen_once` + lambda con l'helper ufficiale
+  `homeassistant.helpers.start.async_at_started(hass,
+  _register_lovelace_resource_safely)`, che usa internamente
+  `hass.async_run_hass_job` e garantisce l'esecuzione sul event loop sia
+  se HA è già avviato (es. reload dell'integrazione) sia se è ancora in
+  fase di avvio — un solo punto invece dei due rami `if`/`else` di prima.
+- Aggiunto un flag (`hass.data[DOMAIN]["_lovelace_resource_scheduled"]`)
+  per evitare una doppia schedulazione in caso di reload anomali del
+  componente (`async_setup` gira comunque una volta sola per processo HA
+  in condizioni normali).
+- `_register_lovelace_resource_safely` (try/except interno) e
+  `_register_one_resource` (iterazioni su `list(...)`) restano invariati
+  dal fix v7.0.8 — il problema era solo nel meccanismo di scheduling.
+
+### Added
+
+- `tests/test_init.py`: 2 nuovi casi end-to-end (tramite
+  `hass.config_entries.async_setup`, lo stesso percorso reale di avvio) —
+  verificano che la registrazione avvenga senza i log di errore esatti
+  del bug ("thread other than the event loop", "never awaited") e che il
+  flag impedisca una doppia schedulazione.
+
+## [7.0.8] - 2026-10-27
+
+### Fixed — Critico (bug report dettagliato)
+
+**Crash alla registrazione della risorsa Lovelace della card**, segnalato
+con un bug report dettagliato:
+```
+RuntimeError: dictionary changed size during iteration
+  -> for subval in val.values():
+```
+in `_register_one_resource` (`__init__.py`, ~riga 145), mai raccolto
+perché la funzione gira dentro un `hass.async_create_task` non atteso
+(compariva come "Task exception was never retrieved").
+
+- **Causa**: la ricerca di `ResourceStorageCollection` dentro `hass.data`
+  itera fino a 3 livelli di dict annidati con `for v in data.values()` —
+  se un altro integrazione (tipicamente `lovelace` stesso, ancora nel
+  proprio setup) modifica quello stesso dict in parallelo durante l'avvio
+  di HA, l'iterazione fallisce.
+- **Fix 1** (`_register_one_resource`): tutte le iterazioni su dict di
+  HA in `hass.data` ora scattano una copia con `list(...)` prima di
+  iterare — immune a mutazioni concorrenti nel resto della funzione.
+- **Fix 2** (`_register_lovelace_resource_safely`, nuova): l'intera
+  chiamata a `_async_register_lovelace_resource` — lanciata con
+  `hass.async_create_task`, mai attesa da nessuno — è ora avvolta in
+  try/except con `_LOGGER.warning("[EM] registrazione risorsa card
+  fallita: %s", ex)`. Qualunque eccezione residua (non solo il
+  RuntimeError sopra) finisce in un log diagnosticabile, mai più in un
+  "Task exception was never retrieved" senza contesto.
+- **Fix 3** (`async_setup`): la registrazione gira durante `async_setup`,
+  cioè mentre HA sta ancora avviando TUTTI i componenti — esattamente la
+  finestra in cui `lovelace` può ancora star scrivendo in `hass.data`.
+  Stesso meccanismo già introdotto in v7.0.6 per
+  `async_repair_push_targets`: se `hass.state` non è ancora
+  `CoreState.running`, la registrazione viene rimandata a
+  `EVENT_HOMEASSISTANT_STARTED`, quando `lovelace` ha già finito il
+  proprio setup ed è stabile. A un reload con HA già avviato resta
+  immediata come prima.
+
+### Added
+
+- `tests/test_init.py` (nuovo): la ricerca annidata di
+  `ResourceStorageCollection` continua a trovare la collection (sia al
+  primo livello sia annidata), e il wrapper `_register_lovelace_resource_safely`
+  intercetta un'eccezione e la logga invece di propagarla. Il terzo punto
+  (deferral a `EVENT_HOMEASSISTANT_STARTED`) non è ri-testato qui: stesso
+  identico meccanismo già provato in `test_integration.py` per il fix
+  v7.0.6 — invocare l'intero `async_setup()` in un test leggero avrebbe
+  aggiunto fragilità (tocca `hass.http`, static paths, ecc.) senza una
+  garanzia aggiuntiva reale.
+
+## [7.0.7] - 2026-10-21
+
+### Added — Controllo di disponibilità centralizzato per tutte le entità esterne
+
+L'utente ha segnalato il device "(x18) 🔋 Carica_iPhone_Ale" che comanda
+`switch.100118d6db_1`, permanentemente offline:
+```
+Referenced entities switch.100118d6db_1 are missing or not currently available
+```
+Solo `vacuum.py._call_vacuum` e il ramo vacuum di `coordinator.py._sw()`
+controllavano la disponibilità dell'entità reale prima di comandarla
+(segnalazione utente v7.0.3) — ogni altro punto che comanda un'entità
+esterna configurata dall'utente (switch principale, clima, dispositivi a
+batteria, zone di irrigazione) chiamava il servizio incondizionatamente,
+lasciando che Home Assistant scrivesse solo il warning generico sopra,
+senza alcun riferimento a EM.
+
+- **Nuovo** `entity_call.py` — `async_call_if_available(hass, domain,
+  service, entity_id, data=None, *, log_id)`: chiama il servizio solo se
+  l'entità esiste e non è `unavailable`/`unknown`, altrimenti salta la
+  chiamata con un log INFO `[<log_id>] <domain>.<service> ignorato:
+  <entity_id> non disponibile` — mai più il warning generico di HA senza
+  contesto EM.
+- Applicato a: `vacuum.py._call_vacuum` (refactor, stesso comportamento di
+  v7.0.3, ora condiviso); `coordinator.py._sw()` — rami switch e trigger
+  generico (il sito esatto del bug segnalato) e ramo clima, oltre al ramo
+  vacuum già coperto; `climate.py._call_climate` (ogni comando climate
+  passa da qui); `device_coordinator.py._set_charge` (il device esatto
+  segnalato); `irrigation_coordinator.py` — tutti i comandi agli switch di
+  zona (attivazione, disattivazione, rete di sicurezza nel blocco
+  `finally`, `stop_cycle`); `switch.py._IrrZoneSwitch` (il pulsante
+  manuale della zona in dashboard). `select.py` aveva già un controllo
+  equivalente (gate su stato "off"/unavailable/unknown) — non toccato.
+
+### Fixed — Correzione alla riparazione automatica dei push_targets (v7.0.3)
+
+Segnalazione utente: `notify.iphone_di_alessandro` è l'entità notify reale
+(stile HA 2024.8+), `notify.mobile_app_iphone_di_alessandro` è il
+**servizio** legacy — sono due oggetti diversi, nessuno stato è associato
+al secondo. La v7.0.3 di `hub.async_repair_push_targets` tentava di
+auto-migrare un push_target mancante cercando il secondo nome con
+`hass.states.get()` — un controllo sul namespace sbagliato (le entità
+hanno stati, i servizi no), che in pratica non trovava mai nulla in una
+Home Assistant reale e rischiava di scrivere in `CONF_PUSH_TARGETS` un
+valore non verificato come notify valido.
+
+- **`hub.py`, `async_repair_push_targets`**: rimossa del tutto la
+  "migrazione automatica" — un target mancante produce sempre e solo una
+  Repair issue, mai più un tentativo di indovinare il nome giusto.
+  `CONF_PUSH_TARGETS` non viene mai scritto da questa funzione.
+- **`notify_helper.py`, `async_send_push`**: rimosso lo stesso controllo
+  sbagliato (ultimo fallback che trattava `notify.mobile_app_<nome>` come
+  un'entità). Il fallback al servizio legacy (il ciclo che verifica
+  `hass.services.has_service`, corretto) resta l'unico percorso quando
+  l'entità originale non esiste più — esattamente come richiesto: "il
+  fallback ai servizi legacy si usa solo al momento dell'invio".
+- **Traduzioni** (`strings.json`, `translations/it.json`,
+  `translations/en.json`): il testo della Repair issue non menziona più
+  un tentativo di migrazione automatica che non avveniva mai nella
+  pratica; indica invece di cercare l'entity_id corretto in Impostazioni
+  → Entità.
+
+### Added — Test
+
+- `tests/test_coordinator.py`: 2 nuovi casi per `_sw()` — ramo switch
+  (il sito esatto del bug) e ramo trigger generico, più 1 per il ramo
+  clima.
+- `tests/test_climate.py` (nuovo): disponibilità per `_call_climate`.
+- `tests/test_device_coordinator.py`: 1 nuovo caso per `_set_charge` con
+  switch unavailable (il device esatto segnalato).
+- `tests/test_irrigation_coordinator.py`: 1 nuovo caso per uno switch di
+  zona unavailable; 5 test esistenti aggiornati per impostare lo stato
+  dello switch di zona (ora richiesto dal controllo di disponibilità).
+- `tests/test_hub.py`: riscritto il caso di "migrazione automatica" per
+  verificare che NON avvenga più.
+- `tests/test_notify_helper.py`: riscritto il caso equivalente per
+  `async_send_push`.
+
+## [7.0.6] - 2026-10-19
+
+### Fixed — Falso positivo nella Repair "destinatario push non trovato" (segnalazione utente)
+
+L'utente ha segnalato, dopo un riavvio di HA, sia un WARNING in log
+(`[EM] Hub: push_target non trovato e senza alternativa automatica:
+notify.iphone_di_alessandro`) sia una Repair issue corrispondente — pur
+non avendo cambiato nulla nella propria configurazione, e con l'entità
+`notify.iphone_di_alessandro` effettivamente presente ed esistente in HA.
+
+**Causa**: `async_repair_push_targets` (introdotta in v7.0.3) viene
+chiamata in modo sincrono dentro `async_setup_entry` dell'Hub — cioè
+esattamente mentre Home Assistant sta ancora avviando TUTTE le proprie
+config entry. Le entità `notify.*` di un dispositivo (es. l'iPhone) sono
+create dall'integrazione **mobile_app**, in una config entry separata e
+indipendente da quella dell'Hub di EM: non c'è alcuna garanzia che
+l'entry di mobile_app abbia già finito il proprio setup nel momento
+preciso in cui l'Hub di EM esegue il controllo. `"notify"` in
+`after_dependencies` (manifest.json) ordina solo il componente generico
+"notify", non le entità create da mobile_app. Risultato: a ogni riavvio,
+se l'ordine di avvio andava "male" quella volta, un destinatario
+perfettamente valido veniva segnalato come mancante — con tanto di
+Repair issue creata e mai più ripulita automaticamente (nulla la
+richiama una seconda volta dopo il boot).
+
+**Fix** (`__init__.py`, branch Hub di `async_setup_entry`): se
+`hass.state` non è ancora `CoreState.running`, il controllo viene
+rimandato a `EVENT_HOMEASSISTANT_STARTED` — l'evento che Home Assistant
+emette solo dopo che TUTTE le config entry (incluse quelle di mobile_app)
+hanno completato il primo setup. A un reload a HA già avviato (es.
+modifica dell'Hub dalle Opzioni) il controllo resta immediato come prima,
+non c'è alcuna attesa da aggiungere.
+
+**Per chi ha già la Repair issue visibile**: si pulisce da sola al
+prossimo riavvio di HA dopo questo aggiornamento — `async_repair_push_targets`
+rieseguirà (questa volta al momento giusto), troverà il target valido e
+cancellerà l'issue automaticamente (comportamento già esistente in
+`hub.py`, mai stato il problema). Non serve alcuna azione manuale oltre
+all'aggiornamento e al riavvio.
+
+### Added
+
+- `tests/test_integration.py`: 2 nuovi casi end-to-end che esercitano il
+  vero percorso di avvio (`async_setup_entry`) invece di chiamare
+  `async_repair_push_targets` direttamente (quelli restano in
+  `test_hub.py`, non toccati da questo fix) — uno simula l'ordine di
+  avvio peggiore (entità assente all'avvio dell'Hub, apparsa solo dopo,
+  prima di `EVENT_HOMEASSISTANT_STARTED`) e verifica che nessuna issue
+  venga mai creata; l'altro verifica la non-regressione del percorso
+  immediato a HA già avviato.
+
 ## [7.0.5] - 2026-10-19
 
 ### Fixed — Correzione a un fix precedente (CI fallita, test

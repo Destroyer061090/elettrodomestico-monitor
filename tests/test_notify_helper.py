@@ -80,9 +80,15 @@ def test_00_00_window_disables_filtering():
 # chiamarlo con un entity_id non più esistente (es. l'app companion iOS
 # ri-registrata con un nuovo entity_id) non solleva alcuna eccezione, quindi
 # il vecchio codice segnava "sent = True" e la notifica spariva in silenzio,
-# senza mai raggiungere i fallback funzionanti. Questi test coprono i 4 casi
-# richiesti: entità esistente, entità mancante con fallback mobile_app
-# (entità e servizio legacy), entità mancante senza alcun fallback.
+# senza mai raggiungere i fallback funzionanti. Questi test coprono i casi
+# attuali: entità esistente, entità mancante con fallback al servizio
+# legacy, entità mancante senza alcun fallback.
+#
+# CORREZIONE (segnalazione utente, 2026-10-21): la v7.0.3 aveva anche un
+# fallback verso l'entità "notify.mobile_app_<nome>" — ma quel nome è il
+# SERVIZIO legacy, senza alcuno stato associato, quindi quel controllo
+# (hass.states.get) non trovava mai nulla in una Home Assistant reale.
+# Rimosso: vedi test_push_never_checks_mobile_app_name_as_an_entity sotto.
 
 async def test_push_delivers_via_send_message_when_entity_exists(hass):
     """Caso base: l'entità target esiste davvero → consegna diretta via
@@ -97,33 +103,35 @@ async def test_push_delivers_via_send_message_when_entity_exists(hass):
     assert calls[0].data.get("message") == "msg"
 
 
-async def test_push_falls_back_to_mobile_app_entity_when_target_missing(hass, caplog):
-    """FIX (segnalazione utente v7.0.3, CRITICO): l'entità configurata non
-    esiste più (app companion ri-registrata) ma notify.mobile_app_<nome>
-    esiste sotto il nuovo nome — la notifica deve arrivare lì, non perdersi."""
-    caplog.set_level(logging.INFO)
+async def test_push_never_checks_mobile_app_name_as_an_entity(hass):
+    """CORREZIONE (segnalazione utente, 2026-10-21): anche se un'entità
+    chiamata "notify.mobile_app_<nome>" esistesse per puro caso,
+    async_send_push non deve mai trattarla come il target di fallback —
+    quel nome è il SERVIZIO legacy, un concetto diverso. Qui il SERVIZIO
+    legacy non è registrato: la consegna deve fallire con un warning, non
+    ripiegare sull'entità "notify.mobile_app_iphone_di_alessandro"."""
     calls = async_mock_service(hass, "notify", "send_message")
     # notify.iphone_di_alessandro NON viene mai impostata: simula l'entità sparita.
     hass.states.async_set("notify.mobile_app_iphone_di_alessandro", "unknown")
 
     await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
 
-    assert len(calls) == 1
-    assert calls[0].data.get("entity_id") == "notify.mobile_app_iphone_di_alessandro"
-    assert "consegnato a" in caplog.text
+    assert calls == []
 
 
-async def test_push_falls_back_to_legacy_mobile_app_service_when_target_missing(hass):
-    """Non-regressione: se esiste solo il SERVIZIO legacy
-    notify.mobile_app_<nome> (non l'entità), la consegna deve comunque
-    passare da lì — comportamento già presente prima di questo fix."""
+async def test_push_falls_back_to_legacy_mobile_app_service_when_target_missing(hass, caplog):
+    """Non-regressione: se esiste il SERVIZIO legacy
+    notify.mobile_app_<nome> (verificato con hass.services.has_service,
+    non con uno stato), la consegna deve passare da lì."""
+    caplog.set_level(logging.INFO)
     legacy_calls = async_mock_service(hass, "notify", "mobile_app_iphone_di_alessandro")
-    # Nessuna entità notify.* impostata: né il target originale né l'entità mobile_app_*.
+    # Nessuna entità notify.* impostata: solo il servizio legacy esiste.
 
     await async_send_push(hass, ["notify.iphone_di_alessandro"], "msg", "title", "test")
 
     assert len(legacy_calls) == 1
     assert legacy_calls[0].data.get("message") == "msg"
+    assert "consegnato al servizio legacy" in caplog.text
 
 
 async def test_push_warns_without_raising_when_no_fallback_exists(hass, caplog):

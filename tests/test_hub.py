@@ -5,11 +5,18 @@ v7.0.3): prima, un push_target che puntava a un'entità notify non più
 esistente (tipicamente l'app companion iOS/Android ri-registrata con un
 nuovo entity_id dopo una reinstallazione) veniva perso in silenzio da
 notify_helper.async_send_push — l'utente non riceveva più notifiche push e
-non aveva alcun segnale che qualcosa non andasse. Questi test coprono i
-4 casi richiesti: entità valida (nessuna modifica), entità mancante con
-fallback automatico a notify.mobile_app_<nome>, entità mancante senza
-alcuna alternativa (issue di riparazione), e migrazione automatica
-dell'entry.
+non aveva alcun segnale che qualcosa non andasse.
+
+CORREZIONE (segnalazione utente, 2026-10-21): la prima versione (v7.0.3)
+tentava anche di auto-migrare un target mancante verso un'entità
+"notify.mobile_app_<nome>" — ma quel nome è il SERVIZIO legacy (nessuno
+stato associato), non un'entità: controllarlo con hass.states.get() non
+funzionava mai nella pratica su una Home Assistant reale. Rimossa del
+tutto: ora un target mancante produce sempre e solo una Repair issue, mai
+un tentativo di indovinare il nome giusto. Questi test coprono i 3 casi
+attuali: entità valida (nessuna modifica), entità mancante (issue di
+riparazione), e l'issue che si auto-risolve quando l'utente corregge il
+destinatario a mano.
 """
 from __future__ import annotations
 
@@ -56,11 +63,12 @@ async def test_existing_target_is_left_untouched(hass):
     assert registry.async_get_issue(DOMAIN, _issue_id(entry)) is None
 
 
-async def test_missing_target_is_migrated_to_mobile_app_entity(hass, caplog):
-    """FIX (segnalazione utente v7.0.3): l'entità originale non esiste più,
-    ma notify.mobile_app_<nome> sì (app companion ri-registrata) — l'entry
-    deve essere aggiornata automaticamente al nuovo nome, con un log INFO,
-    e nessuna issue deve comparire (il problema si è auto-risolto)."""
+async def test_missing_target_is_never_auto_migrated_to_the_legacy_service_name(hass, caplog):
+    """CORREZIONE (segnalazione utente, 2026-10-21): notify.mobile_app_<nome>
+    è il SERVIZIO legacy, non un'entità — anche se per qualche motivo
+    un'entità con quel nome esatto esistesse, non deve mai essere scritta
+    in CONF_PUSH_TARGETS come "migrazione automatica" (comportamento della
+    v7.0.3, rimosso). L'entry non va mai modificata: solo la Repair issue."""
     caplog.set_level(logging.INFO)
     # notify.iphone_di_alessandro NON viene mai impostata: simula l'entità sparita.
     hass.states.async_set("notify.mobile_app_iphone_di_alessandro", "unknown")
@@ -68,14 +76,13 @@ async def test_missing_target_is_migrated_to_mobile_app_entity(hass, caplog):
 
     await async_repair_push_targets(hass, entry)
 
-    assert entry.data[CONF_PUSH_TARGETS] == ["notify.mobile_app_iphone_di_alessandro"]
-    assert "migrato automaticamente" in caplog.text
+    assert entry.data[CONF_PUSH_TARGETS] == ["notify.iphone_di_alessandro"]  # invariato
     registry = ir.async_get(hass)
-    assert registry.async_get_issue(DOMAIN, _issue_id(entry)) is None
+    assert registry.async_get_issue(DOMAIN, _issue_id(entry)) is not None
 
 
 async def test_missing_target_without_fallback_creates_repair_issue(hass, caplog):
-    """Nessuna entità né mobile_app_<nome> trovata: l'entry NON viene
+    """Il target configurato non esiste come entità: l'entry NON viene
     modificata (il valore configurato dall'utente non va perso in
     silenzio), compare un WARNING in log con prefisso [EM], e viene creata
     una issue di riparazione visibile in Impostazioni → Riparazioni."""

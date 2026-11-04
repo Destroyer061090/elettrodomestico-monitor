@@ -1,8 +1,10 @@
 # ============================================================
 # FILE:    switch.py
-# VERSION: 5.8.13
+# VERSION: 7.0.7
 # DESC:    Switch platform — main device switch, irrigation master/zone/day switches
 # CHANGED: 2026-06-11
+# CHANGED: 2026-10-21 (v7.0.7: _IrrZoneSwitch salta il comando se lo
+#          switch reale della zona non è disponibile. Vedi CHANGELOG.md)
 # ============================================================
 """Switch platform for Elettrodomestico Monitor v22.
 
@@ -32,6 +34,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .entity_call import async_call_if_available
 from .const import (
     VERSION,
     DOMAIN, CONF_INSTANCE_ID, CONF_APPLIANCE_NAME, CONF_SLOT,
@@ -203,12 +206,20 @@ async def _async_setup_irrigation_switch(
                     async_track_state_change_event(
                         hass, [self._sw_eid], _mirror))
         async def async_turn_on(self, **kw):
+            # FIX (segnalazione utente, 2026-10-21): nessun controllo di
+            # disponibilità prima di comandare lo switch reale della zona
+            # — stesso problema già corretto per il vacuum (v7.0.3). Vedi
+            # entity_call.py.
             if self._sw_eid:
-                await hass.services.async_call("homeassistant", "turn_on", {"entity_id": self._sw_eid})
+                await async_call_if_available(
+                    hass, "homeassistant", "turn_on", self._sw_eid,
+                    log_id=f"IRR {iid}")
                 self.async_write_ha_state()
         async def async_turn_off(self, **kw):
             if self._sw_eid:
-                await hass.services.async_call("homeassistant", "turn_off", {"entity_id": self._sw_eid})
+                await async_call_if_available(
+                    hass, "homeassistant", "turn_off", self._sw_eid,
+                    log_id=f"IRR {iid}")
                 self.async_write_ha_state()
 
     # ── Enable/disable scheduling switch ─────────────────────────────────────

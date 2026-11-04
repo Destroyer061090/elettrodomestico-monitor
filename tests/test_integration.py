@@ -25,6 +25,9 @@ quanto gli altri.
 from __future__ import annotations
 
 import pytest
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.elettrodomestico_monitor.const import (
@@ -33,6 +36,7 @@ from custom_components.elettrodomestico_monitor.const import (
     CONF_INSTANCE_ID,
     CONF_POWER_SENSOR,
     CONF_PRESET,
+    CONF_PUSH_TARGETS,
     CONF_SLOT,
     DOMAIN,
     ENTRY_TYPE_HUB,
@@ -118,3 +122,66 @@ async def test_appliance_without_control_entity_gets_no_main_switch(hass, enable
     await hass.async_block_till_done()
 
     assert hass.states.get(f"switch.{SFX_SW_SWITCH}_x2") is None
+
+
+# ── Riparazione push_targets: falso positivo al riavvio (v7.0.6) ─────────────
+#
+# FIX (segnalazione utente v7.0.6): async_repair_push_targets (hub.py)
+# girava SINCRONA dentro async_setup_entry dell'Hub. mobile_app crea le
+# proprie entità notify.* da config entry INDIPENDENTI, senza alcun
+# ordinamento garantito rispetto all'Hub di EM — "notify" in
+# after_dependencies (manifest.json) ordina solo il componente "notify",
+# non le entità create da "mobile_app". Un push_target perfettamente
+# valido risultava quindi "mancante" ad ogni riavvio di HA, con tanto di
+# Repair issue creata e mai più ripulita.
+
+async def test_push_repair_is_deferred_until_ha_finishes_starting(hass, enable_custom_integrations):
+    """Simula il caso peggiore: l'Hub si avvia PRIMA che l'entità notify
+    esista (mobile_app non ha ancora finito il proprio setup). Il
+    controllo non deve scattare subito (altrimenti la segnalerebbe
+    erroneamente mancante) — deve aspettare EVENT_HOMEASSISTANT_STARTED,
+    a quel punto trova il target (apparso nel frattempo) e NON crea
+    alcuna issue."""
+    hass.set_state(CoreState.not_running)
+
+    hub_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_HUB, CONF_PUSH_TARGETS: ["notify.iphone_di_alessandro"]},
+        title="Hub Globale",
+    )
+    hub_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(hub_entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = ir.async_get(hass)
+    issue_id = f"missing_push_targets_{hub_entry.entry_id}"
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+    # mobile_app finisce di avviarsi: l'entità compare prima che HA segnali
+    # EVENT_HOMEASSISTANT_STARTED.
+    hass.states.async_set("notify.iphone_di_alessandro", "unknown")
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_push_repair_runs_immediately_when_ha_already_running(hass, enable_custom_integrations):
+    """Non-regressione: a HA già avviato (es. un reload manuale dell'Hub
+    dalle Opzioni), il controllo resta immediato come prima — non ha senso
+    aspettare EVENT_HOMEASSISTANT_STARTED, che a quel punto non scatta più."""
+    hass.set_state(CoreState.running)
+
+    hub_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_HUB, CONF_PUSH_TARGETS: ["notify.destinatario_fantasma"]},
+        title="Hub Globale",
+    )
+    hub_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(hub_entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = ir.async_get(hass)
+    issue_id = f"missing_push_targets_{hub_entry.entry_id}"
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None

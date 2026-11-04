@@ -1,10 +1,12 @@
 # ============================================================
 # FILE:    irrigation_coordinator.py
-# VERSION: 5.9.2
+# VERSION: 7.0.7
 # DESC:    Irrigation coordinator — zone cycling, scheduling, stats, countdown
 # CHANGED: 2026-08-29 (v6.2.5: fix notifica fine ciclo — Rete/Sole mostravano
 #          il cumulativo di giornata invece della quota del singolo ciclo,
 #          stesso bug già corretto in coordinator.py v6.2.4. Vedi CHANGELOG.md)
+# CHANGED: 2026-10-21 (v7.0.7: tutti i comandi agli switch di zona passano
+#          da entity_call.async_call_if_available. Vedi CHANGELOG.md)
 # ============================================================
 """
 Irrigation Coordinator for Elettrodomestico Monitor.
@@ -45,6 +47,7 @@ from .const import (
     ENTRY_TYPE_IRRIGATION,
     WEEK_DAYS,
 )
+from .entity_call import async_call_if_available
 from .hub import get_hub_config
 from .notify_helper import async_send_notification
 from .storage import ElettrodomesticoStorage
@@ -385,11 +388,13 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                 # Activate zone switch (skip if manual: user already turned it on)
                 sw = zone.get("switch", "")
                 if sw and not manual:
-                    try:
-                        await self.hass.services.async_call(
-                            "homeassistant", "turn_on", {"entity_id": sw})
-                    except Exception as ex:
-                        _LOGGER.warning("[IRR %s] Zone switch error: %s", self.instance_id, ex)
+                    # FIX (segnalazione utente, 2026-10-21): nessun controllo
+                    # di disponibilità prima di comandare lo switch della
+                    # zona — stesso problema già corretto per il vacuum
+                    # (v7.0.3). Vedi entity_call.py.
+                    await async_call_if_available(
+                        self.hass, "homeassistant", "turn_on", sw,
+                        log_id=f"IRR {self.instance_id}")
                 elif sw and manual:
                     _LOGGER.info("[IRR %s] Zona %s gia' ON (avvio manuale) — non ri-attivo",
                                  self.instance_id, sw)
@@ -410,14 +415,12 @@ class IrrigationCoordinator(DataUpdateCoordinator):
                 self._stop_countdown()
                 self._countdown_s = 0
                 if sw:
-                    try:
-                        self._em_off_ts = dt_util.utcnow().timestamp()
-                        await self.hass.services.async_call(
-                            "homeassistant", "turn_off", {"entity_id": sw})
+                    self._em_off_ts = dt_util.utcnow().timestamp()
+                    ok = await async_call_if_available(
+                        self.hass, "homeassistant", "turn_off", sw,
+                        log_id=f"IRR {self.instance_id}")
+                    if ok:
                         _LOGGER.info("[IRR %s] Zone %d OFF: %s", self.instance_id, zone_idx, sw)
-                    except Exception as ex:
-                        _LOGGER.error("[IRR %s] Zone %d turn_off FAILED: %s — %s",
-                                      self.instance_id, zone_idx, sw, ex)
                 else:
                     _LOGGER.warning("[IRR %s] Zone %d has no switch configured", self.instance_id, zone_idx)
 
@@ -434,11 +437,9 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             for zone in self.zones:
                 sw_f = zone.get("switch", "")
                 if sw_f:
-                    try:
-                        await self.hass.services.async_call(
-                            "homeassistant", "turn_off", {"entity_id": sw_f})
-                    except Exception:
-                        pass
+                    await async_call_if_available(
+                        self.hass, "homeassistant", "turn_off", sw_f,
+                        log_id=f"IRR {self.instance_id}")
             self._active_zone_idx = -1
             self._cycle_active = False
             self._stop_requested = False
@@ -489,10 +490,9 @@ class IrrigationCoordinator(DataUpdateCoordinator):
             for zone in self.zones:
                 sw = zone.get("switch", "")
                 if sw:
-                    try:
-                        await self.hass.services.async_call(
-                            "homeassistant", "turn_off", {"entity_id": sw})
-                    except Exception: pass
+                    await async_call_if_available(
+                        self.hass, "homeassistant", "turn_off", sw,
+                        log_id=f"IRR {self.instance_id}")
         _LOGGER.info("[IRR %s] Cycle stopped (%s)", self.instance_id,
                      "external" if external else "user")
 

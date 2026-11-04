@@ -1,10 +1,22 @@
 # ============================================================
 # FILE:    __init__.py
-# VERSION: 5.7.27
+# VERSION: 7.0.9
 # DESC:    Integration setup, platform loading, irrigation routing, services registration
 # CHANGED: 2026-09-09 (v6.2.9: aggiunto CONFIG_SCHEMA — richiesto da hassfest
 #          per integrazioni che implementano async_setup; fix lint 'ex' non
 #          usata. Vedi CHANGELOG.md)
+# CHANGED: 2026-10-19 (v7.0.6: rimanda async_repair_push_targets a
+#          EVENT_HOMEASSISTANT_STARTED se HA non ha ancora finito di
+#          avviarsi — evita un falso positivo al riavvio. Vedi CHANGELOG.md)
+# CHANGED: 2026-10-27 (v7.0.8: _register_one_resource — RuntimeError
+#          "dictionary changed size during iteration" sui dict di HA in
+#          hass.data durante l'avvio; registrazione rimandata a
+#          EVENT_HOMEASSISTANT_STARTED, task avvolto in try/except. Vedi
+#          CHANGELOG.md)
+# CHANGED: 2026-10-29 (v7.0.9: CORREZIONE al fix v7.0.8 — la lambda sync
+#          passata ad async_listen_once girava in un thread executor,
+#          rendendo hass.async_create_task non thread-safe. Sostituita
+#          con l'helper ufficiale async_at_started. Vedi CHANGELOG.md)
 # ============================================================
 """Elettrodomestico Monitor v18."""
 from __future__ import annotations
@@ -13,11 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.start import async_at_started
 
 from .const import DOMAIN, ENTRY_TYPE_HUB, ENTRY_TYPE_APPLIANCE, CONF_ENTRY_TYPE, CONF_INSTANCE_ID, ENTRY_TYPE_IRRIGATION, ENTRY_TYPE_DEVICE
 from .coordinator import ElettrodomesticoCoordinator
@@ -90,9 +103,38 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
                 _LOGGER.debug("[EM] Static path '%s' not registered: %s", p.url_path, ex2)
 
     # ── Auto-register Lovelace resource (scheduled after setup) ─────────────
-    hass.async_create_task(_async_register_lovelace_resource(hass))
+    # FIX (segnalazione utente, 2026-10-27, CRITICO — e CORREZIONE
+    # successiva, 2026-10-29): il primo fix rimandava la registrazione a
+    # EVENT_HOMEASSISTANT_STARTED con hass.bus.async_listen_once e una
+    # lambda sync. Una lambda non è né una coroutine né marcata @callback,
+    # quindi HA la esegue in un thread dell'executor — chiamare
+    # hass.async_create_task da lì non è thread-safe ("calls
+    # hass.async_create_task from a thread other than the event loop"),
+    # la coroutine non veniva mai attesa ("coroutine
+    # '_register_lovelace_resource_safely' was never awaited") e la
+    # risorsa non veniva mai registrata. Corretto con l'helper ufficiale
+    # async_at_started, che usa hass.async_run_hass_job internamente e
+    # garantisce l'esecuzione sul event loop sia nel caso "HA già
+    # avviato" (es. reload dell'integrazione) sia in quello "ancora in
+    # fase di avvio" — un solo punto invece dei due rami if/else di prima.
+    # async_setup gira una volta sola per processo HA, ma il flag sotto
+    # protegge comunque da una doppia schedulazione in caso di reload
+    # anomali del componente.
+    if not hass.data[DOMAIN].get("_lovelace_resource_scheduled"):
+        hass.data[DOMAIN]["_lovelace_resource_scheduled"] = True
+        async_at_started(hass, _register_lovelace_resource_safely)
 
     return True
+
+
+async def _register_lovelace_resource_safely(hass: HomeAssistant) -> None:
+    """Wrap _async_register_lovelace_resource so a failure never surfaces
+    as an unretrieved task exception (this is always invoked via
+    hass.async_create_task, never awaited by the caller)."""
+    try:
+        await _async_register_lovelace_resource(hass)
+    except Exception as ex:
+        _LOGGER.warning("[EM] registrazione risorsa card fallita: %s", ex)
 
 
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
@@ -126,7 +168,12 @@ async def _register_one_resource(hass: HomeAssistant, card_file: str, VERSION: s
             resource_collection = data
             break
         if isinstance(data, dict):
-            for v in data.values():
+            # FIX (segnalazione utente, 2026-10-27 — CRITICO): iterare
+            # direttamente su un dict di HA mentre un altro task lo
+            # modifica in parallelo durante l'avvio solleva
+            # "RuntimeError: dictionary changed size during iteration".
+            # list(...) scatta una copia, sicura da iterare.
+            for v in list(data.values()):
                 if isinstance(v, ResourceStorageCollection):
                     resource_collection = v
                     break
@@ -134,17 +181,17 @@ async def _register_one_resource(hass: HomeAssistant, card_file: str, VERSION: s
             break
 
     if resource_collection is None:
-        for val in hass.data.values():
+        for val in list(hass.data.values()):
             if isinstance(val, ResourceStorageCollection):
                 resource_collection = val
                 break
             if isinstance(val, dict):
-                for subval in val.values():
+                for subval in list(val.values()):
                     if isinstance(subval, ResourceStorageCollection):
                         resource_collection = subval
                         break
                     if isinstance(subval, dict):
-                        for subsubval in subval.values():
+                        for subsubval in list(subval.values()):
                             if isinstance(subsubval, ResourceStorageCollection):
                                 resource_collection = subsubval
                                 break
@@ -253,10 +300,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # FIX (segnalazione utente v7.0.3): auto-ripara i push_targets che
         # puntano a un'entità notify non più esistente (es. app companion
         # ri-registrata) — vedi hub.async_repair_push_targets per i dettagli.
-        try:
-            await async_repair_push_targets(hass, entry)
-        except Exception as ex:
-            _LOGGER.warning("[EM] Hub: push_targets repair failed: %s", ex)
+        #
+        # FIX (segnalazione utente v7.0.6 — falso positivo al riavvio):
+        # durante il boot di HA questa funzione girava SINCRONA dentro
+        # async_setup_entry dell'Hub, nello stesso momento in cui anche
+        # mobile_app sta ancora creando le proprie entità notify.* (sono
+        # config entry separate, senza alcun ordinamento garantito rispetto
+        # all'Hub — "notify" in after_dependencies ordina solo il componente
+        # "notify", non le entità create da "mobile_app"). Un target
+        # perfettamente valido veniva quindi segnalato come mancante ad ogni
+        # riavvio, con una Repair issue creata e poi mai più ripulita (nulla
+        # la richiama una seconda volta). Se HA non ha ancora finito di
+        # avviarsi, posponiamo il controllo a EVENT_HOMEASSISTANT_STARTED
+        # (fired dopo che tutte le config entry, incluse quelle di
+        # mobile_app, hanno completato il primo setup). In un reload a HA
+        # già avviato (es. dopo aver modificato l'Hub dalle Opzioni) il
+        # controllo resta immediato, come prima.
+        async def _run_push_repair(_event=None) -> None:
+            try:
+                await async_repair_push_targets(hass, entry)
+            except Exception as ex:
+                _LOGGER.warning("[EM] Hub: push_targets repair failed: %s", ex)
+
+        if hass.state == CoreState.running:
+            await _run_push_repair()
+        else:
+            entry.async_on_unload(
+                hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _run_push_repair))
         if "update_coordinator" not in hass.data[DOMAIN]:
             upd = UpdateCheckCoordinator(hass)
             try: await upd.async_config_entry_first_refresh()

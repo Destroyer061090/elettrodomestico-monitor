@@ -33,8 +33,10 @@ set_maintenance:
 export_config:
   name: Esporta Configurazione
   description: >
-    Esporta la configurazione di tutti i device in /config/www/em_export.json.
-    Scaricabile da /local/em_export.json.
+    Esporta la configurazione di tutti i device in
+    /config/elettrodomestico_monitor/em_export.json (dalla v7.0.4 non più
+    in /config/www, per sicurezza — non è servito via URL pubblico).
+    Recuperabile con un file manager o l'addon Samba.
 
 import_config:
   name: Importa Configurazione

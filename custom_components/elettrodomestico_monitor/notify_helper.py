@@ -1,12 +1,15 @@
 # DESC: Centralized multi-channel notification sender, shared by all coordinators.
 #       Eliminates the previously-duplicated push/whatsapp/alexa/google logic.
-# VERSION: 7.0.5
+# VERSION: 7.0.7
 # CHANGED: 2026-06-11 (data storica ricostruita — campo assente nell'header
 #          originale prima dell'audit v6.1.0)
 # CHANGED: 2026-10-16 - timeout di sicurezza su tutte le chiamate di
 #          notifica (v7.0.3) — RIMOSSO in v7.0.5, vedi CHANGELOG: era
 #          inefficace perché hass.services.async_call senza blocking=True
 #          non attende mai il completamento dell'handler.
+# CHANGED: 2026-10-21 (v7.0.7: rimosso il fallback a "notify.mobile_app_
+#          <nome>" come entità — era il nome di un SERVIZIO, non
+#          un'entità. Vedi CHANGELOG.md)
 """Shared notification helper.
 
 A single async function sends a notification across the enabled channels
@@ -69,8 +72,7 @@ async def async_send_push(hass: HomeAssistant, targets: list, message: str,
 
     Tries notify.send_message against the target ENTITY (HA 2024.8+ entity
     style) only if that entity still exists; otherwise falls back to the
-    legacy notify.<service> and notify.mobile_app_<service> services, and
-    finally to the notify.mobile_app_<service> entity if one exists. Public
+    legacy notify.<service> and notify.mobile_app_<service> SERVICES. Public
     (no leading underscore) so other modules — e.g. update_coordinator.py —
     can reuse this single implementation instead of duplicating it.
 
@@ -83,10 +85,17 @@ async def async_send_push(hass: HomeAssistant, targets: list, message: str,
     mancante" a livello core — quindi `sent` diventava True e la notifica
     spariva in silenzio, senza mai raggiungere i fallback funzionanti qui
     sotto. Ora si tenta send_message SOLO se l'entità esiste davvero in
-    hass.states, e si prova anche l'entità notify.mobile_app_<nome> (non
-    solo il servizio legacy) come ultimo fallback — copre esattamente il
-    caso segnalato: vecchia entità sparita, nuova entità mobile_app_<nome>
-    presente sotto nuovo nome dopo la ri-registrazione dell'app.
+    hass.states.
+
+    CORREZIONE (segnalazione utente, 2026-10-21): la prima versione di
+    questo fix provava ANCHE un ultimo fallback verso l'entità
+    "notify.mobile_app_<nome>" (via hass.states.get). Ma
+    notify.mobile_app_<nome> è il nome del SERVIZIO legacy — nessuno
+    stato/entità associato — quindi quel controllo non trovava mai nulla
+    in una Home Assistant reale ed era codice morto. Rimosso: il fallback
+    ai servizi legacy (il ciclo svc_name/mobile_app_<svc_name> qui sotto,
+    verificato correttamente con hass.services.has_service) resta l'unico
+    e corretto percorso quando l'entità originale non esiste più.
 
     NOTA (v7.0.5): hass.services.async_call qui sotto è chiamato senza
     blocking=True, quindi è "fire-and-forget" per design — ritorna appena
@@ -119,25 +128,12 @@ async def async_send_push(hass: HomeAssistant, targets: list, message: str,
                         await hass.services.async_call(
                             "notify", svc, {"title": title, "message": message})
                         sent = True
+                        _LOGGER.info(
+                            "[%s] push: destinatario '%s' non trovato, consegnato al servizio legacy '%s'",
+                            log_id, t, svc)
                         break
                     except Exception as ex:  # noqa: BLE001
                         _LOGGER.warning("[%s] push notify.%s failed: %s", log_id, svc, ex)
-
-            if not sent:
-                fallback_entity = f"notify.mobile_app_{svc_name}"
-                if fallback_entity != t and hass.states.get(fallback_entity) is not None:
-                    try:
-                        await hass.services.async_call(
-                            "notify", "send_message",
-                            {"entity_id": fallback_entity, "message": message, "title": title})
-                        sent = True
-                        _LOGGER.info(
-                            "[%s] push: destinatario '%s' non trovato, consegnato a '%s'",
-                            log_id, t, fallback_entity)
-                    except Exception as ex:  # noqa: BLE001
-                        _LOGGER.debug(
-                            "[%s] push send_message fallback failed for %s: %s",
-                            log_id, fallback_entity, ex)
 
         if not sent:
             _LOGGER.warning("[%s] push: destinatario '%s' non trovato", log_id, t)

@@ -1,7 +1,10 @@
-# VERSION: 5.7.2
+# VERSION: 7.0.7
 # CHANGED: 2026-07-23 (v6.2.3: guardia contro soglie avvio/stop invertite o
 #          coincidenti — causavano toggling continuo, confermato con
 #          esecuzione reale. Vedi CHANGELOG.md)
+# CHANGED: 2026-10-21 (v7.0.7: _set_charge salta il comando se lo switch di
+#          ricarica non è disponibile — segnalazione utente, vedi
+#          CHANGELOG.md)
 # DESC: Device (battery charge manager) coordinator — monitors % battery,
 #       auto charge control with hysteresis, cycle + time tracking, notifications.
 
@@ -26,6 +29,7 @@ from .const import (
     SFX_SW_NOTIFY_GOOGLE, SFX_SW_NOTIFY_WHATSAPP,
 )
 from .storage import ElettrodomesticoStorage
+from .entity_call import async_call_if_available
 from .hub import get_hub_config
 from .notify_helper import async_send_notification
 
@@ -147,11 +151,14 @@ class DeviceCoordinator(DataUpdateCoordinator):
     async def _set_charge(self, on: bool):
         if not self._charge_switch: return
         svc = "turn_on" if on else "turn_off"
-        try:
-            await self.hass.services.async_call(
-                "homeassistant", svc, {"entity_id": self._charge_switch})
-        except Exception as ex:
-            _LOGGER.error("[DEV %s] charge %s failed: %s", self.instance_id, svc, ex)
+        # FIX (segnalazione utente, 2026-10-21): nessun controllo di
+        # disponibilità prima di comandare lo switch di ricarica — con lo
+        # switch permanentemente unavailable (es. switch.100118d6db_1,
+        # device "(x18) Carica_iPhone_Ale"), HA scriveva solo un warning
+        # generico senza alcun riferimento a EM. Vedi entity_call.py.
+        await async_call_if_available(
+            self.hass, "homeassistant", svc, self._charge_switch,
+            log_id=f"DEV x{self.slot}")
 
     # ── notifications (multi-channel, same pattern as irrigation) ──────────────
     def _notify_sw_on(self, sfx: str) -> bool:
