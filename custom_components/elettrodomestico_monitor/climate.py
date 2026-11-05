@@ -1,11 +1,15 @@
 # ============================================================
 # FILE:    climate.py
-# VERSION: 7.0.7
+# VERSION: 7.1.3
 # DESC:    Climate platform — wrapper entity for clima preset devices
 # CHANGED: 2026-09-09 (v6.2.9: fix lint — rimossa la definizione duplicata di
 #          current_temperature. Vedi CHANGELOG.md)
 # CHANGED: 2026-10-21 (v7.0.7: _call_climate salta il comando se il climate
 #          reale non è disponibile. Vedi CHANGELOG.md)
+# CHANGED: 2026-11-05 (v7.1.3: current_temperature/target_temperature/
+#          target_temperature_high/target_temperature_low/temperature_unit
+#          → native_* (deprecati in HA 2026.11, rimossi in 2027.11).
+#          Richiede ora HA >= 2026.11 (hacs.json). Vedi CHANGELOG.md)
 # ============================================================
 """Climate platform for Elettrodomestico Monitor v26.
 
@@ -114,7 +118,7 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
     Follows external changes automatically via state tracking.
     """
 
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
 
     @property
     def supported_features(self) -> ClimateEntityFeature:
@@ -221,13 +225,13 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
         return _HVAC_ACTION_MAP.get(action) if action else None
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         st = self._real_state()
         if st is None: return None
         return st.attributes.get("current_temperature")
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         st = self._real_state()
         if st is None: return None
         return st.attributes.get("temperature")
@@ -317,12 +321,12 @@ class _ClimaEntity(CoordinatorEntity, ClimateEntity):
         return st.attributes.get("humidity") if st else None
 
     @property
-    def target_temperature_high(self) -> float | None:
+    def native_target_temperature_high(self) -> float | None:
         st = self._real_state()
         return st.attributes.get("target_temp_high") if st else None
 
     @property
-    def target_temperature_low(self) -> float | None:
+    def native_target_temperature_low(self) -> float | None:
         st = self._real_state()
         return st.attributes.get("target_temp_low") if st else None
 

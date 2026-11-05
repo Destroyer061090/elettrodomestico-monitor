@@ -80,3 +80,39 @@ async def test_call_climate_skipped_when_entity_does_not_exist(hass):
     await ent._call_climate("set_hvac_mode", {"hvac_mode": "cool"})
 
     assert calls == []
+
+
+# ── API native_* (HA 2026.11+) ────────────────────────────────────────────────
+
+async def test_native_temperature_properties_mirror_the_real_entity(hass):
+    """FIX (segnalazione utente, 2026-11-05): HA 2026.11 ha deprecato
+    current_temperature/target_temperature/target_temperature_high/
+    target_temperature_low/temperature_unit in favore delle controparti
+    native_* (rimozione prevista per HA 2027.11) — usare ancora i vecchi
+    nomi produce un warning in log a ogni aggiornamento dello stato.
+    Verifica che le nuove property native_* continuino a rispecchiare
+    correttamente gli attributi dell'entità climate reale."""
+    hass.states.async_set("climate.daikin_big", "heat", {
+        "current_temperature": 21.5,
+        "temperature": 23.0,
+        "target_temp_high": 25.0,
+        "target_temp_low": 19.0,
+    })
+    ent = _make_clima_entity(hass)
+
+    assert ent.native_current_temperature == 21.5
+    assert ent.native_target_temperature == 23.0
+    assert ent.native_target_temperature_high == 25.0
+    assert ent.native_target_temperature_low == 19.0
+
+
+async def test_native_temperature_properties_are_none_without_real_entity(hass):
+    """Non-regressione: senza l'entità reale (non ancora disponibile al
+    setup) le property native_* devono restare None, come facevano prima
+    le omonime non-native."""
+    ent = _make_clima_entity(hass)  # climate.daikin_big non viene mai impostata
+
+    assert ent.native_current_temperature is None
+    assert ent.native_target_temperature is None
+    assert ent.native_target_temperature_high is None
+    assert ent.native_target_temperature_low is None

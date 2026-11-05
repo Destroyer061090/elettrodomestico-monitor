@@ -5,6 +5,50 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.1.3] - 2026-11-05
+
+### Changed — Requisito minimo HA alzato a 2026.11 (decisione dell'utente)
+
+Dopo l'aggiornamento a HA 2026.11, l'utente ha segnalato 5 warning in log:
+```
+custom_components.elettrodomestico_monitor.climate::_ClimaEntity provides
+the deprecated _attr_temperature_unit/current_temperature/
+target_temperature/target_temperature_high/target_temperature_low, this
+will stop working in Home Assistant 2027.11, use native_* instead
+```
+**Causa**: HA 2026.11 (rilasciata il 4/11/2026, pochi giorni prima di
+questo fix — vedi
+contributors.home-assistant.io/blog/2026/10/08/climate-native-temperature)
+ha rinominato le property di temperatura di `ClimateEntity` con il
+prefisso `native_`. Il vecchio stile resta funzionante fino al 2027.11
+(oltre un anno di margine), quindi non c'era urgenza tecnica — ma
+eliminare il warning del tutto richiede necessariamente la migrazione,
+che a sua volta richiede HA >= 2026.11: le due versioni delle property
+non possono coesistere (HA logga comunque il warning se la sottoclasse
+fornisce ANCHE il nome vecchio, indipendentemente dal nuovo), e su una
+HA precedente la 2026.11 le nuove property native_* non verrebbero mai
+lette dalla classe base, che continuerebbe a cercare i vecchi nomi. Dato
+il tradeoff, chiesto all'utente: scelto di migrare subito e alzare il
+requisito minimo, assumendo un utilizzo con HA sempre aggiornata.
+
+- **`climate.py`**: `_attr_temperature_unit` → `_attr_native_temperature_unit`;
+  le property `current_temperature`, `target_temperature`,
+  `target_temperature_high`, `target_temperature_low` rinominate alle
+  controparti `native_*`. `min_temp`/`max_temp`/`target_temperature_step`
+  NON rinominate (non toccate dalla deprecazione). Nessun cambio di
+  comportamento: le nuove property continuano a leggere gli stessi
+  attributi dall'entità climate reale.
+- **`hacs.json`**: requisito minimo alzato da `2024.11.0` a `2026.11.0`.
+  **Chi è rimasto su una versione di HA precedente alla 2026.11 non vedrà
+  più temperatura corrente/target sul clima EM** finché non aggiorna HA
+  (nessun crash — solo dato assente, la classe base non trova più le
+  vecchie property che EM non fornisce più).
+
+### Added
+
+- `tests/test_climate.py`: 2 nuovi casi per le property `native_*` (con e
+  senza l'entità climate reale disponibile).
+
 ## [7.1.2] - 2026-11-05
 
 ### Fixed — CI, test fallito (nessun cambio al codice del componente)
