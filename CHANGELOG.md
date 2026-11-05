@@ -5,6 +5,56 @@ const.VERSION). Le intestazioni `# VERSION:` in cima a ogni singolo file
 tracciano invece l'ultima modifica *di quel file* e possono restare ferme
 per più release consecutive se il file non viene toccato.
 
+## [7.1.2] - 2026-11-05
+
+### Fixed — CI, test fallito (nessun cambio al codice del componente)
+
+`tests/test_init.py::test_lovelace_resource_registration_runs_without_thread_errors`
+falliva in CI:
+```
+ERROR homeassistant.setup: Setup failed for 'elettrodomestico_monitor': Integration not found.
+assert await hass.config_entries.async_setup(hub_entry.entry_id)
+AssertionError: assert False
+```
+**Causa**: questo test (aggiunto in v7.0.9) chiama
+`hass.config_entries.async_setup(...)`, che richiede il fixture
+`enable_custom_integrations` per rendere l'integrazione custom
+individuabile dal loader di HA nei test — esattamente come fanno già i
+test in `test_integration.py`. Mancava dalla firma del test.
+
+- **`tests/test_init.py`**: aggiunto `enable_custom_integrations` alla
+  firma del test. L'altro nuovo test nello stesso file
+  (`test_lovelace_resource_registration_is_scheduled_only_once`) chiama
+  `em.async_setup` direttamente, bypassando il loader — non necessitava
+  del fixture, ed è infatti l'unico dei due passato in CI.
+
+Nessun cambio al codice del componente: solo correzione del test.
+
+## [7.1.1] - 2026-11-04
+
+### Fixed — CI, hassfest fallito su validazione traduzioni
+
+GitHub Actions ha bloccato la pipeline hassfest ("Validate") con 3 errori:
+```
+[TRANSLATIONS] Invalid translations/en.json: the string should not
+contain HTML at 'issues.missing_push_targets.description'.
+[TRANSLATIONS] Invalid strings.json: the string should not contain HTML
+at 'issues.missing_push_targets.description'.
+```
+**Causa**: il testo corretto in v7.0.7 usava `notify.<nome_dispositivo>`
+(IT) / `notify.<device_name>` (EN) come placeholder leggibile — ma il
+validatore hassfest tratta `<...>` come un possibile tag HTML e rifiuta
+la stringa a prescindere dal contenuto.
+
+- **`strings.json`, `translations/it.json`**: `notify.<nome_dispositivo>`
+  → `notify.nome_del_dispositivo` (nessuna parentesi angolare).
+- **`translations/en.json`**: `notify.<device_name>` →
+  `notify.your_device_name`.
+- Verificato che non ci siano altre occorrenze di `<...>` in
+  `strings.json`/`translations/*.json`.
+
+Nessun cambio di comportamento — solo testo, per far ripassare la CI.
+
 ## [7.1.0] - 2026-11-04
 
 ### Fixed — Minore (revisione HACS @frenck, approvazione v7.0.5)

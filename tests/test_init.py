@@ -105,7 +105,8 @@ async def test_register_lovelace_resource_safely_catches_and_logs_instead_of_rai
 
 # ── Schedulazione via async_at_started (correzione 2026-10-29) ───────────────
 
-async def test_lovelace_resource_registration_runs_without_thread_errors(hass, caplog, monkeypatch):
+async def test_lovelace_resource_registration_runs_without_thread_errors(
+        hass, caplog, monkeypatch, enable_custom_integrations):
     """CORREZIONE (segnalazione utente, 2026-10-29 — CRITICO): con HA già
     avviato (es. un reload dell'integrazione), async_at_started deve
     invocare _register_lovelace_resource_safely direttamente sul event
